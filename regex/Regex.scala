@@ -28,7 +28,31 @@ import scala.util.control.TailCalls.{done, tailcall, TailRec}
  *
  * For subset/emptiness/nullability queries and Brzozowski derivatives, see [[Subset]].
  */
-sealed trait Regex:
+enum Regex:
+
+  /** Matches the empty string ε. */
+  case Eps
+
+  /** Matches no string. */
+  case Empty
+
+  /** Matches any single code point in `set`. */
+  case Chars private[Regex] (set: CharSet)
+
+  /** Concatenation `a · b`. */
+  case Concat private[Regex] (a: Regex, b: Regex)
+
+  /** Alternation. Stored as a [[Set]] for ACI normalization. Always size ≥ 2. */
+  case Alt private[Regex] (parts: Set[Regex])
+
+  /** Intersection. Stored as a [[Set]] for ACI normalization. Always size ≥ 2. */
+  case Inter private[Regex] (parts: Set[Regex])
+
+  /** Kleene star `r*`. */
+  case Star private[Regex] (r: Regex)
+
+  /** Complement `¬r`. */
+  case Compl private[Regex] (r: Regex)
 
   /** Concatenation: `this · other`. */
   infix def concat(other: Regex): Regex = Regex.concatImpl(this, other).result
@@ -72,30 +96,6 @@ object Regex:
   val maxRepeatBound: Int = 1000
 
   def apply(set: CharSet): Regex = if set.isEmpty then Empty else Chars(set)
-
-  /** Matches the empty string ε. */
-  case object Eps extends Regex
-
-  /** Matches no string. */
-  case object Empty extends Regex
-
-  /** Matches any single code point in `set`. */
-  final case class Chars private[Regex] (set: CharSet) extends Regex
-
-  /** Concatenation `a · b`. */
-  final case class Concat private[Regex] (a: Regex, b: Regex) extends Regex
-
-  /** Alternation. Stored as a [[Set]] for ACI normalization. Always size ≥ 2. */
-  final case class Alt private[Regex] (parts: Set[Regex]) extends Regex
-
-  /** Intersection. Stored as a [[Set]] for ACI normalization. Always size ≥ 2. */
-  final case class Inter private[Regex] (parts: Set[Regex]) extends Regex
-
-  /** Kleene star `r*`. */
-  final case class Star private[Regex] (r: Regex) extends Regex
-
-  /** Complement `¬r`. */
-  final case class Compl private[Regex] (r: Regex) extends Regex
 
   /** Alternation of a collection. */
   def alt(parts: Iterable[Regex]): Regex =
