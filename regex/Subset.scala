@@ -2,7 +2,7 @@ package halotukozak.regex
 
 import halotukozak.regex.Regex.*
 
-import scala.collection.immutable.SortedSet
+import scala.collection.immutable.{Queue, SortedSet}
 import scala.util.control.TailCalls.{done, tailcall, TailRec}
 
 /**
@@ -49,21 +49,22 @@ object Subset:
     def derive(c: Int): Subset = deriveImpl(a, c).result
 
   private def isEmptyImpl(r: Regex): Boolean =
-    def loop(queue: List[Regex], visited: Set[Regex]): TailRec[Boolean] = queue match
-      case Nil => done(true)
-      case s :: rest =>
-        for
-          isNull <- tailcall(nullableImpl(s))
-          out <-
-            if isNull then done(false)
-            else
-              for
-                derived <- tailcall(deriveAt(partitionReps(s), s, Nil))
-                next = derived.filterNot(visited.contains)
-                r <- tailcall(loop(rest ::: next, visited ++ next))
-              yield r
-        yield out
-    loop(List(r), Set(r)).result
+    def loop(queue: Queue[Regex], visited: Set[Regex]): TailRec[Boolean] =
+      queue.dequeueOption match
+        case None => done(true)
+        case Some((s, rest)) =>
+          for
+            isNull <- tailcall(nullableImpl(s))
+            out <-
+              if isNull then done(false)
+              else
+                for
+                  derived <- tailcall(deriveAt(partitionReps(s), s, Nil))
+                  next = derived.filterNot(visited.contains)
+                  r <- tailcall(loop(rest.enqueueAll(next), visited ++ next))
+                yield r
+          yield out
+    loop(Queue(r), Set(r)).result
 
   private def nullableImpl(r: Regex): TailRec[Boolean] = r match
     case Eps => done(true)

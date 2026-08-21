@@ -33,6 +33,16 @@ class SubsetBenchmark:
     Subset.parse("a[a-z]*b").toOption.get.underlying & Subset.parse("a[a-z]*c").toOption.get.underlying,
   )
 
+  // Same idea as disjointIntersection but with a much wider reachable-state set: a 100-way
+  // alternation of distinct fixed-length tokens (which alone builds a sizeable prefix-trie
+  // of derivative states) intersected with a literal that matches none of them. Neither
+  // operand is a bare Chars node, so the smart constructors can't collapse this to Empty at
+  // construction time — isEmptyImpl's BFS has to walk the whole state space. Meant to stress
+  // the BFS queue itself at a size where an O(n) vs O(n^2) difference would actually show up.
+  private val manyStatesEmpty = Subset.of(
+    Regex.inter(Set(Regex.alt((0 until 100).map(i => Regex.literal(f"token$i%03d"))), Regex.literal("nomatch"))),
+  )
+
   @Benchmark
   def subsetCheck(): Boolean = narrow.subset(wide)
 
@@ -44,6 +54,9 @@ class SubsetBenchmark:
 
   @Benchmark
   def isEmptyCheckWorstCase(): Boolean = disjointIntersection.isEmpty
+
+  @Benchmark
+  def isEmptyCheckManyStates(): Boolean = manyStatesEmpty.isEmpty
 
   @Benchmark
   def deriveChain(): Boolean =
