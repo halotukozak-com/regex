@@ -193,7 +193,17 @@ object Regex:
  */
 private[regex] final class CharSet @publicInBinary private[CharSet] (val ranges: Vector[Range]) extends AnyVal:
 
-  def contains(c: Int): Boolean = ranges.exists(_.contains(c))
+  def contains(c: Int): Boolean =
+    @tailrec
+    def loop(lo: Int, hi: Int): Boolean =
+      if lo > hi then false
+      else
+        val mid = (lo + hi) >>> 1
+        val r = ranges(mid)
+        if c < r.lo then loop(lo, mid - 1)
+        else if c > r.hi then loop(mid + 1, hi)
+        else true
+    loop(0, ranges.length - 1)
 
   def isEmpty: Boolean = ranges.isEmpty
 

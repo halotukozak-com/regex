@@ -10,10 +10,20 @@ import sys
 REGRESSION_THRESHOLD_PCT = 10.0
 
 
+def bench_key(entry: dict) -> str:
+    """Disambiguates @Param'd benchmarks — JMH gives every param combination the same
+    `benchmark` name, so keying on that alone silently collapses them onto each other."""
+    params = entry.get("params") or {}
+    if not params:
+        return entry["benchmark"]
+    param_str = ",".join(f"{k}={v}" for k, v in sorted(params.items()))
+    return f'{entry["benchmark"]}[{param_str}]'
+
+
 def load(path: str) -> dict[str, dict]:
     with open(path) as f:
         entries = json.load(f)
-    return {e["benchmark"]: e for e in entries}
+    return {bench_key(e): e for e in entries}
 
 
 def fmt_score(entry: dict) -> str:
@@ -30,7 +40,10 @@ def main() -> None:
     print("| Benchmark | main | current | Δ |")
     print("|---|---|---|---|")
     for name in names:
-        short_name = name.rsplit(".", 2)[-2] + "." + name.rsplit(".", 1)[-1]
+        method, _, params = name.partition("[")
+        short_name = method.rsplit(".", 2)[-2] + "." + method.rsplit(".", 1)[-1]
+        if params:
+            short_name += "[" + params
         base = baseline.get(name)
         cand = candidate.get(name)
         if base is None:
