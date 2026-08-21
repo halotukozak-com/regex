@@ -94,6 +94,8 @@ jobs:
     name: Benchmark (current vs main)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -118,4 +120,9 @@ jobs:
             -f 1 -wi 3 -i 5 -w 300ms -r 300ms -rf json -rff "$GITHUB_WORKSPACE/main-bench.json"
       - name: Compare
         run: |
-          python3 .github/scripts/compare_benchmarks.py main-bench.json current-bench.json | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 .github/scripts/compare_benchmarks.py main-bench.json current-bench.json | tee comparison.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Comment on PR
+        uses: marocchino/sticky-pull-request-comment@v3.0.5
+        with:
+          header: benchmark
+          path: comparison.md
