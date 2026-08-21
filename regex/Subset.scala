@@ -43,7 +43,7 @@ object Subset:
     def isEmpty: Boolean = isEmptyImpl(a)
 
     /** `true` iff `ε ∈ L(a)`. */
-    def nullable: Boolean = nullableImpl(a).result
+    def nullable: Boolean = a.nullable
 
     /** Brzozowski derivative of `a` with respect to code point `c`. */
     def derive(c: Int): Subset = deriveImpl(a, c).result
@@ -53,47 +53,14 @@ object Subset:
       queue.dequeueOption match
         case None => done(true)
         case Some((s, rest)) =>
-          for
-            isNull <- tailcall(nullableImpl(s))
-            out <-
-              if isNull then done(false)
-              else
-                for
-                  derived <- tailcall(deriveAt(partitionReps(s), s, Nil))
-                  next = derived.filterNot(visited.contains)
-                  r <- tailcall(loop(rest.enqueueAll(next), visited ++ next))
-                yield r
-          yield out
+          if s.nullable then done(false)
+          else
+            for
+              derived <- tailcall(deriveAt(partitionReps(s), s, Nil))
+              next = derived.filterNot(visited.contains)
+              r <- tailcall(loop(rest.enqueueAll(next), visited ++ next))
+            yield r
     loop(Queue(r), Set(r)).result
-
-  private def nullableImpl(r: Regex): TailRec[Boolean] = r match
-    case Eps => done(true)
-    case Empty | Chars(_) => done(false)
-    case Concat(a, b) =>
-      for
-        na <- tailcall(nullableImpl(a))
-        out <- if na then tailcall(nullableImpl(b)) else done(false)
-      yield out
-    case Alt(parts) => anyNullable(parts.toList)
-    case Inter(parts) => allNullable(parts.toList)
-    case Star(_) => done(true)
-    case Compl(inner) => tailcall(nullableImpl(inner)).map(!_)
-
-  private def anyNullable(parts: List[Regex]): TailRec[Boolean] = parts match
-    case Nil => done(false)
-    case head :: tail =>
-      for
-        hd <- tailcall(nullableImpl(head))
-        out <- if hd then done(true) else tailcall(anyNullable(tail))
-      yield out
-
-  private def allNullable(parts: List[Regex]): TailRec[Boolean] = parts match
-    case Nil => done(true)
-    case head :: tail =>
-      for
-        hd <- tailcall(nullableImpl(head))
-        out <- if !hd then done(false) else tailcall(allNullable(tail))
-      yield out
 
   private def deriveImpl(r: Regex, c: Int): TailRec[Regex] = r match
     case Eps | Empty => done(Empty)
@@ -101,9 +68,8 @@ object Subset:
     case Concat(a, b) =>
       for
         da <- tailcall(deriveImpl(a, c))
-        na <- tailcall(nullableImpl(a))
         out <-
-          if na then tailcall(deriveImpl(b, c)).map(db => (da.concat(b)) | db)
+          if a.nullable then tailcall(deriveImpl(b, c)).map(db => da.concat(b) | db)
           else done(da.concat(b))
       yield out
     case Alt(parts) => deriveAll(parts.toList, c, Nil).map(Regex.alt)

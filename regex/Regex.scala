@@ -1,6 +1,6 @@
 package halotukozak.regex
 
-import scala.annotation.{publicInBinary, tailrec}
+import scala.annotation.{publicInBinary, tailrec, threadUnsafe}
 import scala.quoted.{Expr, Quotes, ToExpr, Varargs}
 import scala.util.control.TailCalls.{done, tailcall, TailRec}
 import scala.util.hashing.MurmurHash3
@@ -63,6 +63,21 @@ enum Regex:
    */
   override lazy val hashCode: Int = MurmurHash3.caseClassHash(this)
 
+  /**
+   * Cached: nullability is invariant per node but gets re-queried by `Subset.deriveImpl`'s
+   * `Concat` case on every derivative step (once per representative char, for every `Concat`
+   * node on the path) — recomputing structurally every time would re-walk the same subtree
+   * over and over during Brzozowski derivative exploration.
+   */
+  @threadUnsafe lazy val nullable: Boolean = this match
+    case Eps => true
+    case Empty | Chars(_) => false
+    case Concat(a, b) => a.nullable && b.nullable
+    case Alt(parts) => parts.exists(_.nullable)
+    case Inter(parts) => parts.forall(_.nullable)
+    case Star(_) => true
+    case Compl(inner) => !inner.nullable
+
   /** Concatenation: `this · other`. */
   infix def concat(other: Regex): Regex =
     def loop(a: Regex, b: Regex): TailRec[Regex] = (a, b) match
@@ -90,6 +105,8 @@ enum Regex:
     case s: Regex.Star => s
     case _ => Regex.Star(this)
 
+  def * = star
+
   /** Quantifier `this{n,m}` where m can be `Int.MaxValue` for unbounded. */
   def repeat(lo: Int, hi: Int): Regex =
     require(lo >= 0 && hi >= lo, s"invalid bounds {$lo,$hi}")
@@ -99,7 +116,7 @@ enum Regex:
     )
     val mandatory = (1 to lo).foldLeft[Regex](Regex.Eps)((acc, _) => this.concat(acc))
     if hi == Int.MaxValue then mandatory.concat(star)
-    else mandatory.concat((1 to (hi - lo)).foldLeft[Regex](Regex.Eps)((acc, _) => Regex.Eps | (this.concat(acc))))
+    else mandatory.concat((1 to (hi - lo)).foldLeft[Regex](Regex.Eps)((acc, _) => Regex.Eps | this.concat(acc)))
 
 object Regex:
 
@@ -143,14 +160,14 @@ object Regex:
     else
       val (chars, rest) = seq.partitionIsInstance[Chars]
       val merged =
-        if chars.sizeIs <= 1 then Some(seq)
+        if chars.sizeIs <= 1 then seq
         else
           val isect = chars.iterator.map(_.set).reduce(_ intersect _)
-          Option.unless(isect.isEmpty)(rest + Chars(isect))
+          if isect.isEmpty then null else rest + Chars(isect)
       merged match
-        case None => Empty
-        case Some(m) if m.sizeIs == 1 => m.head
-        case Some(m) => Inter(m)
+        case null => Empty
+        case m if m.sizeIs == 1 => m.head
+        case m => Inter(m)
 
   /** All-strings regex `Σ*`. */
   val all: Regex = Regex(CharSet.all).star
@@ -262,14 +279,14 @@ private[regex] object CharSet:
   def normalize(rs: Iterable[Range]): CharSet =
     val (acc, last) = rs.toVector
       .sortBy(_.lo)
-      .foldLeft((Vector.empty[Range], Option.empty[Range])):
-        case ((acc, None), r) => (acc, Some(r))
-        case ((acc, Some(cur)), r) =>
-          if r.lo <= cur.hi + 1 then (acc, Some(Range(cur.lo, math.max(cur.hi, r.hi))))
-          else (acc :+ cur, Some(r))
+      .foldLeft((Vector.empty[Range], null: Range | Null)):
+        case ((acc, null), r) => (acc, r)
+        case ((acc, cur: Range), r) =>
+          if r.lo <= cur.hi + 1 then (acc, Range(cur.lo, math.max(cur.hi, r.hi)))
+          else (acc :+ cur, r)
     CharSet(last match
-      case None => acc
-      case Some(r) => acc :+ r)
+      case null => acc
+      case r => acc :+ r)
 
   def normalize(ranges: Range*): CharSet = normalize(ranges)
 

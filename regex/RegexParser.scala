@@ -244,9 +244,8 @@ object RegexParser:
       (cur: @switch) match
         case '\\' =>
           pos += 1
-          readEscapedChar(inClass = true) match
-            case Left(_) => fail("shorthand escapes (\\d, \\s, \\w, ...) are not supported inside character classes")
-            case Right(c) => c
+          readEscapedChar(inClass = true).getOrElse:
+            fail("shorthand escapes (\\d, \\s, \\w, ...) are not supported inside character classes")
         case _ => consume().toInt
 
     private def parseEscape(): Regex =
