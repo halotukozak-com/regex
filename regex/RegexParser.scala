@@ -2,7 +2,7 @@ package halotukozak.regex
 
 import halotukozak.regex.Regex.Eps
 
-import scala.annotation.tailrec
+import scala.annotation.{switch, tailrec}
 
 /** Reason a [[RegexParser.parse]] call did not produce a [[Regex]]. */
 sealed trait RegexParseError:
@@ -123,7 +123,7 @@ object RegexParser:
       @tailrec def loop(acc: Vector[Regex]): Vector[Regex] =
         if eof then acc
         else
-          cur match
+          (cur: @switch) match
             case ')' | '|' => acc
             case _ => loop(acc :+ parseFactor())
       val parts = loop(Vector.empty)
@@ -134,7 +134,7 @@ object RegexParser:
       val a = parseAtom()
       if eof then a
       else
-        cur match
+        (cur: @switch) match
           case '*' =>
             pos += 1
             a.star
@@ -153,7 +153,7 @@ object RegexParser:
       val lo = readNumber()
       if lo < 0 then fail(s"expected number after `{` at position $pos")
       if eof then fail(s"unterminated `{` at position $pos")
-      val hi = cur match
+      val hi = (cur: @switch) match
         case ',' =>
           pos += 1
           if !eof && cur == '}' then Int.MaxValue
@@ -183,7 +183,7 @@ object RegexParser:
     /** atom = group | charClass | `.` | escape | char */
     private def parseAtom(): Regex =
       if eof then fail("unexpected end of pattern")
-      cur match
+      (cur: @switch) match
         case '(' => parseGroup()
         case '[' => parseCharClass()
         case '.' =>
@@ -208,7 +208,7 @@ object RegexParser:
 
     private def consumeGroupHeader(): Unit =
       if eof then unsupported("incomplete group header")
-      cur match
+      (cur: @switch) match
         case ':' => pos += 1
         case '=' | '!' => unsupported("lookahead")
         case '<' =>
@@ -241,7 +241,7 @@ object RegexParser:
 
     private def readClassChar(): Int =
       if eof then fail("unterminated character class")
-      cur match
+      (cur: @switch) match
         case '\\' =>
           pos += 1
           readEscapedChar(inClass = true) match
@@ -252,7 +252,7 @@ object RegexParser:
     private def parseEscape(): Regex =
       expect('\\')
       if eof then fail("dangling backslash")
-      cur match
+      (cur: @switch) match
         case 'Q' =>
           pos += 1
           parseQuoted()
@@ -280,7 +280,7 @@ object RegexParser:
       if eof then fail("dangling backslash")
       val c = src.charAt(pos)
       pos += 1
-      c match
+      (c: @switch) match
         case 'd' => Left(CharSet.range('0', '9'))
         case 'D' => Left(CharSet.range('0', '9').complement)
         case 's' => Left(whitespaceSet)
@@ -294,8 +294,8 @@ object RegexParser:
         case 'a' => Right(0x07)
         case 'e' => Right(0x1b)
         case 'v' => Right(0x0b)
-        case 'b' if inClass => Right(0x08)
-        case 'b' | 'B' => unsupported(s"word boundary `\\$c`")
+        case 'b' => if inClass then Right(0x08) else unsupported(s"word boundary `\\$c`")
+        case 'B' => unsupported(s"word boundary `\\$c`")
         case 'A' | 'Z' | 'z' | 'G' => unsupported(s"anchor `\\$c`")
         case 'p' | 'P' => unsupported("Unicode property")
         case 'k' => unsupported("named backreference `\\k`")
@@ -305,9 +305,10 @@ object RegexParser:
         case 'x' => Right(readHexEscape())
         case 'u' => Right(readUnicodeEscape())
         case '0' => Right(readOctalEscape())
-        case d if d.isDigit => unsupported(s"backreference `\\$d`")
-        case l if l.isLetter => fail(s"illegal/unsupported escape sequence `\\$l` at position $pos")
-        case _ => Right(c.toInt)
+        case _ =>
+          if c.isDigit then unsupported(s"backreference `\\$c`")
+          else if c.isLetter then fail(s"illegal/unsupported escape sequence `\\$c` at position $pos")
+          else Right(c.toInt)
 
     /** `\cx`: control character `x XOR 0x40`. */
     private def readControlEscape(): Int =
@@ -324,29 +325,23 @@ object RegexParser:
         val text = src.substring(start, pos)
         pos += 1
         if text.isEmpty then fail("empty `\\x{}` escape")
-        val cp =
-          try Integer.parseInt(text, 16)
-          catch case _: NumberFormatException => fail(s"invalid hexadecimal escape sequence `\\x{$text}`")
+        val cp = text.toHexIntOpt.getOrElse(fail(s"invalid hexadecimal escape sequence `\\x{$text}`"))
         if cp < 0 || cp > CharSet.maxCodePoint then fail(s"invalid code point `\\x{$text}`")
         cp
       else
         if pos + 2 > src.length then fail("incomplete `\\x` escape")
         val text = src.substring(pos, pos + 2)
-        try
-          val v = Integer.parseInt(text, 16)
-          pos += 2
-          v
-        catch case _: NumberFormatException => fail(s"invalid hexadecimal escape sequence `\\x$text`")
+        val v = text.toHexIntOpt.getOrElse(fail(s"invalid hexadecimal escape sequence `\\x$text`"))
+        pos += 2
+        v
 
     /** `\uhhhh`: exactly 4 hex digits. */
     private def readUnicodeEscape(): Int =
       if pos + 4 > src.length then fail("incomplete `\\u` escape")
       val text = src.substring(pos, pos + 4)
-      try
-        val v = Integer.parseInt(text, 16)
-        pos += 4
-        v
-      catch case _: NumberFormatException => fail(s"invalid unicode escape sequence `\\u$text`")
+      val v = text.toHexIntOpt.getOrElse(fail(s"invalid unicode escape sequence `\\u$text`"))
+      pos += 4
+      v
 
     /** `\0n`, `\0nn` or `\0mnn` octal escape, mirroring `java.util.regex.Pattern`'s own grammar. */
     private def readOctalEscape(): Int =
@@ -360,3 +355,8 @@ object RegexParser:
           n * 64 + m * 8 + o
         else n * 8 + m
       else n
+
+extension (str: String)
+  private def toHexIntOpt: Option[Int] =
+    try Some(Integer.parseInt(str, 16))
+    catch case _: NumberFormatException => None

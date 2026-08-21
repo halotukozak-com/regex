@@ -33,7 +33,7 @@ jobs:
         uses: VirtusLab/scala-cli-setup@v1
       - name: Generate documentation
         run: |
-          scala-cli --power doc . -- \
+          scala-cli --power doc . --exclude "bench/**" -- \
           -project "regex" \
           -project-version ${{ github.ref_name }} \
           -project-footer "halotukozak/regex" \
