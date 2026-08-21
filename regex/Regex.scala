@@ -28,7 +28,38 @@ import scala.util.control.TailCalls.{done, tailcall, TailRec}
  *
  * For subset/emptiness/nullability queries and Brzozowski derivatives, see [[Subset]].
  */
-sealed trait Regex
+sealed trait Regex:
+
+  /** Concatenation: `this · other`. */
+  infix def concat(other: Regex): Regex = Regex.concatImpl(this, other).result
+
+  /** Alternation: `this | other`. */
+  infix def |(other: Regex): Regex = Regex.alt(Set(this, other))
+
+  /** Intersection: `this ∩ other`. */
+  infix def &(other: Regex): Regex = Regex.inter(Set(this, other))
+
+  /** Complement: `¬this`. */
+  def unary_! : Regex = this match
+    case Regex.Compl(inner) => inner
+    case _ => Regex.Compl(this)
+
+  /** Kleene star: `this*`. */
+  def star: Regex = this match
+    case Regex.Eps | Regex.Empty => Regex.Eps
+    case s: Regex.Star => s
+    case _ => Regex.Star(this)
+
+  /** Quantifier `this{n,m}` where m can be `Int.MaxValue` for unbounded. */
+  def repeat(lo: Int, hi: Int): Regex =
+    require(lo >= 0 && hi >= lo, s"invalid bounds {$lo,$hi}")
+    require(
+      lo <= Regex.maxRepeatBound && (hi == Int.MaxValue || hi <= Regex.maxRepeatBound),
+      s"quantifier bound exceeds maximum supported value of ${Regex.maxRepeatBound} (got {$lo,$hi})",
+    )
+    val mandatory = (1 to lo).foldLeft[Regex](Regex.Eps)((acc, _) => this.concat(acc))
+    if hi == Int.MaxValue then mandatory.concat(star)
+    else mandatory.concat((1 to (hi - lo)).foldLeft[Regex](Regex.Eps)((acc, _) => Regex.Eps | (this.concat(acc))))
 
 object Regex:
 
@@ -65,39 +96,6 @@ object Regex:
 
   /** Complement `¬r`. */
   final case class Compl private[Regex] (r: Regex) extends Regex
-
-  extension (r: Regex)
-
-    /** Concatenation: `this · other`. */
-    infix def concat(other: Regex): Regex = Regex.concatImpl(r, other).result
-
-    /** Alternation: `this | other`. */
-    infix def |(other: Regex): Regex = Regex.alt(Set(r, other))
-
-    /** Intersection: `this ∩ other`. */
-    infix def &(other: Regex): Regex = Regex.inter(Set(r, other))
-
-    /** Complement: `¬this`. */
-    def unary_! : Regex = r match
-      case Compl(inner) => inner
-      case _ => Compl(r)
-
-    /** Kleene star: `this*`. */
-    def star: Regex = r match
-      case Eps | Empty => Eps
-      case s: Star => s
-      case _ => Star(r)
-
-    /** Quantifier `this{n,m}` where m can be `Int.MaxValue` for unbounded. */
-    def repeat(lo: Int, hi: Int): Regex =
-      require(lo >= 0 && hi >= lo, s"invalid bounds {$lo,$hi}")
-      require(
-        lo <= Regex.maxRepeatBound && (hi == Int.MaxValue || hi <= Regex.maxRepeatBound),
-        s"quantifier bound exceeds maximum supported value of ${Regex.maxRepeatBound} (got {$lo,$hi})",
-      )
-      val mandatory = (1 to lo).foldLeft[Regex](Regex.Eps)((acc, _) => r.concat(acc))
-      if hi == Int.MaxValue then mandatory.concat(star)
-      else mandatory.concat((1 to (hi - lo)).foldLeft[Regex](Regex.Eps)((acc, _) => Regex.Eps | (r.concat(acc))))
 
   /** Alternation of a collection. */
   def alt(parts: Iterable[Regex]): Regex =
@@ -186,7 +184,7 @@ object Regex:
  */
 private[regex] final class CharSet @publicInBinary private[CharSet] (val ranges: Vector[Range]) extends AnyVal:
 
-  def contains(c: Int): Boolean = ranges.exists(r => c >= r.lo && c <= r.hi)
+  def contains(c: Int): Boolean = ranges.exists(_.contains(c))
 
   def isEmpty: Boolean = ranges.isEmpty
 
@@ -265,6 +263,8 @@ private[regex] final case class Range(lo: Int, hi: Int):
   require(0 <= lo && lo <= hi && hi <= CharSet.maxCodePoint, s"invalid code-point range [$lo, $hi]")
 
   def this(lo: Char, hi: Char) = this(lo.toInt, hi.toInt)
+
+  def contains(c: Int): Boolean = c >= lo && c <= hi
 private[regex] object Range:
   // $COVERAGE-OFF$
   given ToExpr[Range]:

@@ -29,7 +29,24 @@ class RegexConformanceTest extends munit.FunSuite:
     case Left(_: RegexParseError.UnsupportedFeature) => ()
     case other => fail(s"expected UnsupportedFeature, got $other")
 
-  private def codePointsOf(s: String): List[Int] = s.codePoints().toArray.toList
+  /**
+   * Decodes a UTF-16 string into full Unicode code points, combining surrogate pairs.
+   * Hand-rolled instead of `String#codePoints()` (a `java.util.stream` API not implemented
+   * by Scala.js's javalib) to keep this cross-platform, matching the library under test.
+   */
+  private def codePointsOf(s: String): List[Int] =
+    @scala.annotation.tailrec
+    def loop(i: Int, acc: List[Int]): List[Int] =
+      if i >= s.length then acc.reverse
+      else
+        val c1 = s.charAt(i)
+        val isHighSurrogate = c1 >= 0xd800 && c1 <= 0xdbff
+        if isHighSurrogate && i + 1 < s.length && s.charAt(i + 1) >= 0xdc00 && s.charAt(i + 1) <= 0xdfff then
+          val c2 = s.charAt(i + 1)
+          val cp = 0x10000 + (c1 - 0xd800) * 0x400 + (c2 - 0xdc00)
+          loop(i + 2, cp :: acc)
+        else loop(i + 1, c1.toInt :: acc)
+    loop(0, Nil)
 
   /** Whole-string acceptance, i.e. `java.util.regex.Pattern.matches` semantics (not `find`). */
   private def matches(pattern: String, s: String): Boolean =
