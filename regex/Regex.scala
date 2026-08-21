@@ -189,6 +189,7 @@ private[regex] final class CharSet @publicInBinary private[CharSet] (val ranges:
   def isEmpty: Boolean = ranges.isEmpty
 
   infix def union(other: CharSet): CharSet = CharSet.normalize(ranges ++ other.ranges)
+  def |(other: CharSet): CharSet = union(other)
 
   infix def intersect(other: CharSet): CharSet =
     @tailrec
@@ -202,6 +203,8 @@ private[regex] final class CharSet @publicInBinary private[CharSet] (val ranges:
         val acc1 = if lo <= hi then acc :+ Range(lo, hi) else acc
         if a.hi < b.hi then loop(i + 1, j, acc1) else loop(i, j + 1, acc1)
     CharSet(loop(0, 0, Vector.empty))
+
+  def &(other: CharSet): CharSet = intersect(other)
 
   def complement: CharSet =
     @tailrec
