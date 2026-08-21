@@ -99,32 +99,4 @@ object Subset:
    * yield the same residual, so testing one representative suffices.
    */
   private def partitionReps(r: Regex): List[Int] =
-    val boundaries = collectBoundaries(r, SortedSet[Int](0, CharSet.maxCodePoint + 1)).result.toVector
-    boundaries.init.toList
-
-  private def collectBoundaries(r: Regex, acc: SortedSet[Int]): TailRec[SortedSet[Int]] = r match
-    case Eps | Empty => done(acc)
-    case Chars(set) => tailcall(addBoundaries(set.ranges.toList, acc))
-    case Concat(a, b) =>
-      for
-        a1 <- tailcall(collectBoundaries(a, acc))
-        a2 <- tailcall(collectBoundaries(b, a1))
-      yield a2
-    case Alt(parts) => collectAllBoundaries(parts.toList, acc)
-    case Inter(parts) => collectAllBoundaries(parts.toList, acc)
-    case Star(inner) => tailcall(collectBoundaries(inner, acc))
-    case Compl(inner) => tailcall(collectBoundaries(inner, acc))
-
-  private def addBoundaries(ranges: List[Range], acc: SortedSet[Int]): TailRec[SortedSet[Int]] =
-    ranges match
-      case Nil => done(acc)
-      case head :: tail => tailcall(addBoundaries(tail, acc + head.lo + (head.hi + 1)))
-
-  private def collectAllBoundaries(parts: List[Regex], acc: SortedSet[Int]): TailRec[SortedSet[Int]] =
-    parts match
-      case Nil => done(acc)
-      case head :: tail =>
-        for
-          next <- tailcall(collectBoundaries(head, acc))
-          out <- tailcall(collectAllBoundaries(tail, next))
-        yield out
+    (SortedSet(0, CharSet.maxCodePoint + 1) ++ r.alphabetBoundaries).init.toList
