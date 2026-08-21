@@ -2,6 +2,7 @@ package halotukozak.regex
 
 import halotukozak.regex.Regex.*
 
+import scala.annotation.tailrec
 import scala.collection.immutable.{Queue, SortedSet}
 import scala.util.control.TailCalls.{done, tailcall, TailRec}
 
@@ -55,11 +56,9 @@ object Subset:
         case Some((s, rest)) =>
           if s.nullable then done(false)
           else
-            for
-              derived <- tailcall(deriveAt(partitionReps(s), s, Nil))
-              next = derived.filterNot(visited.contains)
-              r <- tailcall(loop(rest.enqueueAll(next), visited ++ next))
-            yield r
+            val derived = deriveAt(partitionReps(s), s, Nil)
+            val next = derived.filterNot(visited.contains)
+            tailcall(loop(rest.enqueueAll(next), visited ++ next))
     loop(Queue(r), Set(r)).result
 
   private def deriveImpl(r: Regex, c: Int): TailRec[Regex] = r match
@@ -72,26 +71,37 @@ object Subset:
           if a.nullable then tailcall(deriveImpl(b, c)).map(db => da.concat(b) | db)
           else done(da.concat(b))
       yield out
-    case Alt(parts) => deriveAll(parts.toList, c, Nil).map(Regex.alt)
-    case Inter(parts) => deriveAll(parts.toList, c, Nil).map(Regex.inter)
+    case Alt(parts) => done(Regex.alt(deriveAll(parts.toList, c, Nil)))
+    case Inter(parts) => done(Regex.inter(deriveAll(parts.toList, c, Nil)))
     case s @ Star(inner) => tailcall(deriveImpl(inner, c)).map(d => d.concat(s))
     case Compl(inner) => tailcall(deriveImpl(inner, c)).map(!_)
 
-  private def deriveAll(parts: List[Regex], c: Int, acc: List[Regex]): TailRec[List[Regex]] = parts match
-    case Nil => done(acc)
-    case head :: tail =>
-      for
-        d <- tailcall(deriveImpl(head, c))
-        out <- tailcall(deriveAll(tail, c, d :: acc))
-      yield out
+  /**
+   * Plain `@tailrec` loops, not `TailRec`-trampolined: unlike `deriveImpl`'s tree recursion
+   * (whose depth tracks regex structure and needs the heap-based trampoline for stack
+   * safety), these only walk a flat list — `parts`/`reps` — whose length is bounded by
+   * branch/partition count, not tree depth. Composing them through `tailcall`/`for` would
+   * still be stack-safe but pays for a `Cont` continuation-object allocation per list
+   * element; forcing each `deriveImpl(...).result` eagerly here avoids that allocation.
+   *
+   * Trade-off: each forced `.result` is a real (non-tail) JVM call into `deriveImpl`, so an
+   * `Alt`/`Inter` node nested inside another `Alt`/`Inter`'s part now grows the JVM call
+   * stack by one frame per nesting level, instead of being folded into the single top-level
+   * trampoline as before. Verified this stays within the JVM's minimum stack size
+   * (`-Xss208k`) for the worst case the library's own `maxRepeatBound` allows (one `{0,1000}`
+   * quantifier); deliberately-adversarial nesting far beyond that bound can still overflow —
+   * same pre-existing ceiling `Regex#hashCode`/`nullable`/`alphabetBoundaries` already have,
+   * since those are also plain structural recursion, not trampolined.
+   */
+  @tailrec
+  private def deriveAll(parts: List[Regex], c: Int, acc: List[Regex]): List[Regex] = parts match
+    case Nil => acc
+    case head :: tail => deriveAll(tail, c, deriveImpl(head, c).result :: acc)
 
-  private def deriveAt(reps: List[Int], r: Regex, acc: List[Regex]): TailRec[List[Regex]] = reps match
-    case Nil => done(acc)
-    case c :: tail =>
-      for
-        d <- tailcall(deriveImpl(r, c))
-        out <- tailcall(deriveAt(tail, r, d :: acc))
-      yield out
+  @tailrec
+  private def deriveAt(reps: List[Int], r: Regex, acc: List[Regex]): List[Regex] = reps match
+    case Nil => acc
+    case c :: tail => deriveAt(tail, r, deriveImpl(r, c).result :: acc)
 
   /**
    * Returns one representative code point per equivalence class of the alphabet
