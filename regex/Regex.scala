@@ -3,6 +3,7 @@ package halotukozak.regex
 import scala.annotation.{publicInBinary, tailrec}
 import scala.quoted.{Expr, Quotes, ToExpr, Varargs}
 import scala.util.control.TailCalls.{done, tailcall, TailRec}
+import scala.util.hashing.MurmurHash3
 
 /**
  * A symbolic regex algebra with exact language containment ("is this pattern a subset of
@@ -53,6 +54,14 @@ enum Regex:
 
   /** Complement `¬r`. */
   case Compl private[Regex] (r: Regex)
+
+  /**
+   * Cached: this tree is immutable and gets hashed repeatedly by the `Set`-based ACI
+   * normalization in `Regex.alt`/`Regex.inter` and by the visited-state set driving
+   * Brzozowski derivative exploration in [[Subset]] — recomputing structurally every time
+   * would walk the whole subtree on each lookup.
+   */
+  override lazy val hashCode: Int = MurmurHash3.caseClassHash(this)
 
   /** Concatenation: `this · other`. */
   infix def concat(other: Regex): Regex = Regex.concatImpl(this, other).result
