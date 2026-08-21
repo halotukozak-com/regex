@@ -1,0 +1,95 @@
+name: Publish
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  # JVM + Native publish straight to Central via scala-cli, with real doc JARs.
+  publish:
+    name: Publish (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: jvm
+            args: ""
+          - platform: scala-native
+            args: "--native-version 0.5.12"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Setup coursier cache
+        uses: coursier/cache-action@v8.1
+      - uses: VirtusLab/scala-cli-setup@v1
+      - name: Publish
+        env:
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+          SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+          PGP_PRIVATE_KEY: ${{ secrets.PGP_PRIVATE_KEY }}
+          PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
+        run: |
+          scala-cli --power publish . --verbose --platform ${{ matrix.platform }} ${{ matrix.args }} \
+            --user "env:SONATYPE_USERNAME" \
+            --password "env:SONATYPE_PASSWORD" \
+            --secret-key "env:PGP_PRIVATE_KEY" \
+            --secret-key-password "env:PGP_PASSPHRASE"
+
+  # Scala.js needs a bespoke path: scaladoc crashes on Scala.js (scala-cli#3006 — `-scalajs`
+  # is passed to scaladoc, running JS backend phases like JUnitBootstrappers), yet Central
+  # requires a javadoc JAR and scala-cli has no flag to attach an external one. So: reuse the
+  # JVM scaladoc (the API is platform-agnostic), gpg-sign the assembled artifacts, and POST
+  # the bundle to the Central Portal API directly.
+  publish-js:
+    name: Publish (scala-js)
+    runs-on: ubuntu-latest
+    env:
+      SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+      SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+      PGP_PRIVATE_KEY: ${{ secrets.PGP_PRIVATE_KEY }}
+      PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Setup coursier cache
+        uses: coursier/cache-action@v8.1
+      - uses: VirtusLab/scala-cli-setup@v1
+      - name: Build, assemble bundle, and upload to Central Portal
+        run: |
+          set -euo pipefail
+
+          # 1. Reusable javadoc from JVM scaladoc (platform-agnostic API; JS scaladoc is broken).
+          scala-cli --power publish . --platform jvm --signer none \
+            --publish-repository "$PWD/.jvmdoc"
+          jdoc="$(find "$PWD/.jvmdoc" -name 'regex_3-*-javadoc.jar' | head -1)"
+
+          # 2. JS artifacts (jar/sources/pom + checksums), unsigned and without a doc JAR.
+          scala-cli --power publish . --platform scala-js --js-version 1.22.0 \
+            --doc=false --signer none --publish-repository "$PWD/.staging"
+
+          # 3. Inject the reused javadoc into the regex_sjs1_3 coordinate.
+          dir="$(dirname "$(find "$PWD/.staging" -name 'regex_sjs1_3-*.pom' | head -1)")"
+          ver="$(basename "$dir")"
+          cp "$jdoc" "$dir/regex_sjs1_3-$ver-javadoc.jar"
+
+          # 4. gpg-sign every artifact and ensure checksums exist (uniform; no reliance on
+          #    scala-cli writing .asc into a local repo).
+          printf '%s' "$PGP_PRIVATE_KEY" | gpg --batch --import
+          for f in "$dir"/regex_sjs1_3-*.jar "$dir"/regex_sjs1_3-*.pom; do
+            gpg --batch --pinentry-mode loopback --passphrase "$PGP_PASSPHRASE" \
+              --detach-sign --armor "$f"
+            [ -f "$f.sha1" ] || sha1sum "$f" | cut -d' ' -f1 > "$f.sha1"
+            [ -f "$f.md5" ]  || md5sum  "$f" | cut -d' ' -f1 > "$f.md5"
+          done
+
+          # 5. Bundle the maven layout and upload to the Central Portal.
+          ( cd "$PWD/.staging" && zip -qr "$RUNNER_TEMP/bundle.zip" com )
+          token="$(printf '%s:%s' "$SONATYPE_USERNAME" "$SONATYPE_PASSWORD" | base64 | tr -d '\n')"
+          curl --fail-with-body --request POST \
+            --header "Authorization: Bearer $token" \
+            --form "bundle=@$RUNNER_TEMP/bundle.zip" \
+            "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC&name=regex_sjs1_3"

@@ -1,0 +1,56 @@
+name: Deploy documentation to Pages
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Setup coursier cache
+        uses: coursier/cache-action@v8.1
+      - name: Setup scala-cli
+        uses: VirtusLab/scala-cli-setup@v1
+      - name: Generate documentation
+        run: |
+          scala-cli --power doc . -- \
+          -project "regex" \
+          -project-version ${{ github.ref_name }} \
+          -project-footer "halotukozak/regex" \
+          -social-links:github::https://github.com/halotukozak/regex \
+          -snippet-compiler:compile \
+          -source-links:"src=github://halotukozak/regex?tag=${{ github.ref_name }}" \
+          -revision:${{ github.ref_name }}
+      - name: Inject Umami analytics
+        run: |
+          find scala-doc -name '*.html' -exec sed -i \
+            's#</head>#<script defer src="https://cloud.umami.is/script.js" data-website-id="f15f9eef-35ab-4b2a-ba14-f7e079e7de28"></script></head>#' {} +
+      - name: Setup Pages
+        uses: actions/configure-pages@v6
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: 'scala-doc'
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
