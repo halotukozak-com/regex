@@ -23,6 +23,7 @@ class CharSetBenchmark:
   private var ranges: CharSet = uninitialized
   private var interleaved: CharSet = uninitialized
   private var reversedRanges: Vector[Range] = uninitialized
+  private var lastLo: Int = uninitialized
 
   @Setup(Level.Trial)
   def setup(): Unit =
@@ -30,10 +31,15 @@ class CharSetBenchmark:
     // Every other gap, so union/intersect actually have interleaving work to do.
     interleaved = CharSet.normalize((0 until rangeCount).map(i => Range(i * 4 + 2, i * 4 + 3)))
     reversedRanges = (0 until rangeCount).map(i => Range(i * 4, i * 4 + 1)).reverse.toVector
+    // The last input range's lo, derived from the same `i * 4` formula used to build `ranges`
+    // above rather than read back off `ranges` itself: this file also runs, unmodified, against
+    // main's `regex/` sources as the baseline half of the CI benchmark comparison job, so it
+    // can't depend on `CharSet` exposing anything beyond what main's version already does.
+    lastLo = (rangeCount - 1) * 4
 
   /** Worst case for a linear scan: the match is the very last range. */
   @Benchmark
-  def containsNearEnd(): Boolean = ranges.contains(ranges.ranges.last.lo)
+  def containsNearEnd(): Boolean = ranges.contains(lastLo)
 
   /** Best case for a linear scan: the match is the very first range. */
   @Benchmark
@@ -41,7 +47,7 @@ class CharSetBenchmark:
 
   /** A miss (falls in a gap), which still has to prove absence across the whole set. */
   @Benchmark
-  def containsMiss(): Boolean = ranges.contains(ranges.ranges.last.lo + 2)
+  def containsMiss(): Boolean = ranges.contains(lastLo + 2)
 
   @Benchmark
   def union(): CharSet = ranges.union(interleaved)

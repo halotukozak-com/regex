@@ -15,27 +15,27 @@ class CharSetTest extends munit.FunSuite:
     val a = CharSet.range('a', 'm')
     val b = CharSet.range('h', 'z')
     val u = a.union(b)
-    assertEquals(u.ranges, Vector(Range('a', 'z')))
+    assertEquals(u.iterator.toVector, Vector(Range('a', 'z')))
   }
 
   test("union keeps disjoint ranges separate") {
     val a = CharSet.range('a', 'c')
     val b = CharSet.range('x', 'z')
     val u = a.union(b)
-    assertEquals(u.ranges, Vector(Range('a', 'c'), Range('x', 'z')))
+    assertEquals(u.iterator.toVector, Vector(Range('a', 'c'), Range('x', 'z')))
   }
 
   test("union merges adjacent ranges") {
     val a = CharSet.range('a', 'c')
     val b = CharSet.range('d', 'f')
     val u = a.union(b)
-    assertEquals(u.ranges, Vector(Range('a', 'f')))
+    assertEquals(u.iterator.toVector, Vector(Range('a', 'f')))
   }
 
   test("intersect computes overlap") {
     val a = CharSet.range('a', 'm')
     val b = CharSet.range('h', 'z')
-    assertEquals(a.intersect(b).ranges, Vector(Range('h', 'm')))
+    assertEquals(a.intersect(b).iterator.toVector, Vector(Range('h', 'm')))
   }
 
   test("intersect of disjoint is empty") {
@@ -60,12 +60,12 @@ class CharSetTest extends munit.FunSuite:
 
   test("normalize merges overlapping and adjacent ranges") {
     val s = CharSet.normalize(Range('a', 'c'), Range('b', 'e'), Range('f', 'h'))
-    assertEquals(s.ranges, Vector(Range('a', 'h')))
+    assertEquals(s.iterator.toVector, Vector(Range('a', 'h')))
   }
 
   test("normalize sorts unsorted input") {
     val s = CharSet.normalize(Range('x', 'z'), Range('a', 'c'))
-    assertEquals(s.ranges, Vector(Range('a', 'c'), Range('x', 'z')))
+    assertEquals(s.iterator.toVector, Vector(Range('a', 'c'), Range('x', 'z')))
   }
 
   test("dotDefault excludes line terminators") {
@@ -139,7 +139,7 @@ class CharSetTest extends munit.FunSuite:
       Range('c', 'd'),
       Range('e', 'f'),
     )
-    assertEquals(s.ranges, Vector(Range('a', 'f')))
+    assertEquals(s.iterator.toVector, Vector(Range('a', 'f')))
   }
 
   test("normalize keeps non-overlapping ranges separate") {
@@ -149,7 +149,7 @@ class CharSetTest extends munit.FunSuite:
       Range('m', 'p'),
     )
     assertEquals(
-      s.ranges,
+      s.iterator.toVector,
       Vector(
         Range('a', 'c'),
         Range('f', 'h'),
@@ -160,7 +160,7 @@ class CharSetTest extends munit.FunSuite:
 
   test("normalize handles duplicate ranges") {
     val s = CharSet.normalize(Range('a', 'z'), Range('a', 'z'))
-    assertEquals(s.ranges, Vector(Range('a', 'z')))
+    assertEquals(s.iterator.toVector, Vector(Range('a', 'z')))
   }
 
   test("single from Int and Char agree") {
