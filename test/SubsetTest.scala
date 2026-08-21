@@ -1,0 +1,145 @@
+package halotukozak.regex
+
+import halotukozak.regex.Regex.*
+
+class SubsetTest extends munit.FunSuite:
+
+  private def s(pattern: String): Subset = Subset.parse(pattern) match
+    case Right(sub) => sub
+    case Left(err) => fail(s"expected successful parse of /$pattern/, got $err")
+  private def s(r: Regex): Subset = Subset.of(r)
+
+  test("identity: r ⊆ r") {
+    assert(s("a").subset(s("a")))
+    assert(s("[a-z]").subset(s("[a-z]")))
+    assert(s("if").subset(s("if")))
+  }
+
+  test("empty language is subset of anything") {
+    assert(s(Empty).subset(s("a")))
+    assert(s(Empty).subset(s(Empty)))
+  }
+
+  test("nothing nonempty is subset of empty") {
+    assert(!s("a").subset(s(Empty)))
+  }
+
+  test("Eps ⊆ a*") {
+    assert(s(Eps).subset(s("a*")))
+  }
+
+  test("strict subset: a ⊆ [a-z]") {
+    assert(s("a").subset(s("[a-z]")))
+    assert(!s("[a-z]").subset(s("a")))
+  }
+
+  test("prefix subset via .* extension") {
+    assert(s("if.*").subset(s("i.*")))
+    assert(!s("i.*").subset(s("if.*")))
+  }
+
+  test("character class subset") {
+    assert(s("[a-c]").subset(s("[a-z]")))
+    assert(!s("[a-z]").subset(s("[a-c]")))
+  }
+
+  test("alternation subset") {
+    assert(s("a").subset(s("a|b")))
+    assert(s("a|b").subset(s("a|b|c")))
+    assert(!s("a|b|c").subset(s("a|b")))
+  }
+
+  test("Kleene star relationships") {
+    assert(s("a").subset(s("a*")))
+    assert(s("a*").subset(s(".*")))
+  }
+
+  test("isEmpty detects empty languages") {
+    assert(s(Empty).isEmpty)
+    assert(!s(Eps).isEmpty)
+    assert(s(Regex(CharSet.empty)).isEmpty)
+    assert(!s("a").isEmpty)
+    assert(s(s("a").underlying & s("b").underlying).isEmpty)
+    assert(s(s("[a-z]").underlying & s("[A-Z]").underlying).isEmpty)
+    assert(!s(s("[a-m]").underlying & s("[h-z]").underlying).isEmpty)
+  }
+
+  test("complement reverses subset") {
+    val a = s("[a-z]")
+    val notA = s(!a.underlying)
+    assert(!a.subset(notA))
+    assert(s(a.underlying & notA.underlying).isEmpty)
+  }
+
+  // nullable --------------------------------------------------------------
+
+  test("nullable: Eps and Star are nullable") {
+    assert(s(Eps).nullable)
+    assert(s("a*").nullable)
+  }
+
+  test("nullable: non-empty literals are not nullable") {
+    assert(!s("a").nullable)
+    assert(!s("abc").nullable)
+  }
+
+  test("nullable: Empty is not nullable") {
+    assert(!s(Empty).nullable)
+  }
+
+  test("nullable: a? is nullable") {
+    assert(s("a?").nullable)
+  }
+
+  test("nullable: alternation if any branch is") {
+    assert(s("a|b*").nullable)
+    assert(!s("a|b").nullable)
+  }
+
+  test("nullable: concat requires both nullable") {
+    assert(s("a*b*").nullable)
+    assert(!s("a*b").nullable)
+  }
+
+  // derive ----------------------------------------------------------------
+
+  test("derive of literal 'a' wrt 'a' is Eps") {
+    assertEquals(s("a").derive('a'.toInt).underlying, Eps)
+  }
+
+  test("derive of literal 'a' wrt 'b' is Empty") {
+    assertEquals(s("a").derive('b'.toInt).underlying, Empty)
+  }
+
+  test("derive of 'ab' wrt 'a' yields 'b'") {
+    assertEquals(s("ab").derive('a'.toInt).underlying, Regex.lit('b'))
+  }
+
+  test("derive of 'a*' wrt 'a' is 'a*'") {
+    assertEquals(s("a*").derive('a'.toInt).underlying, Regex.lit('a').star)
+  }
+
+  test("derive of char class") {
+    assertEquals(s("[a-z]").derive('m'.toInt).underlying, Eps)
+    assertEquals(s("[a-z]").derive('A'.toInt).underlying, Empty)
+  }
+
+  // withAnySuffix ---------------------------------------------------------
+
+  test("withAnySuffix accepts prefix matches") {
+    val ext = s("if").withAnySuffix
+    assert(ext.derive('i'.toInt).derive('f'.toInt).nullable)
+    assert(ext.derive('i'.toInt).derive('f'.toInt).derive('x'.toInt).nullable)
+  }
+
+  test("withAnySuffix used in shadow check") {
+    assert(s("if").withAnySuffix.subset(s("i").withAnySuffix))
+    assert(!s("i").withAnySuffix.subset(s("if").withAnySuffix))
+  }
+
+  // parse / of constructors -----------------------------------------------
+
+  test("Subset.parse and Subset.of compose") {
+    assertEquals(s("abc").underlying, Regex.literal("abc"))
+    assertEquals(Subset.of(Eps).underlying, Eps)
+  }
