@@ -3,11 +3,12 @@ package halotukozak.regex
 import org.openjdk.jmh.annotations.*
 
 import java.util.concurrent.TimeUnit
+import scala.compiletime.uninitialized
 
 /**
- * `CharSet.contains` currently does a linear scan over sorted, non-overlapping ranges —
- * a candidate for a binary search. This benchmark isolates that operation with many
- * disjoint ranges so the two strategies are actually distinguishable.
+ * `CharSet.contains` currently does a linear scan over sorted, non-overlapping ranges — a
+ * candidate for a binary search. `rangeCount` lets that (and the other set operations) be
+ * measured across input sizes instead of at one fixed point.
  *
  * Run: `scala-cli run --jmh . -- CharSetBenchmark` (see `bench/README.md`).
  */
@@ -16,16 +17,41 @@ import java.util.concurrent.TimeUnit
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
 class CharSetBenchmark:
 
-  private val manyRanges: CharSet = CharSet.normalize((0 until 2000).map(i => Range(i * 4, i * 4 + 1)))
+  @Param(Array("50", "500", "5000"))
+  var rangeCount: Int = uninitialized
+
+  private var ranges: CharSet = uninitialized
+  private var interleaved: CharSet = uninitialized
+  private var reversedRanges: Vector[Range] = uninitialized
+
+  @Setup(Level.Trial)
+  def setup(): Unit =
+    ranges = CharSet.normalize((0 until rangeCount).map(i => Range(i * 4, i * 4 + 1)))
+    // Every other gap, so union/intersect actually have interleaving work to do.
+    interleaved = CharSet.normalize((0 until rangeCount).map(i => Range(i * 4 + 2, i * 4 + 3)))
+    reversedRanges = (0 until rangeCount).map(i => Range(i * 4, i * 4 + 1)).reverse.toVector
 
   /** Worst case for a linear scan: the match is the very last range. */
   @Benchmark
-  def containsNearEnd(): Boolean = manyRanges.contains(manyRanges.ranges.last.lo)
+  def containsNearEnd(): Boolean = ranges.contains(ranges.ranges.last.lo)
 
   /** Best case for a linear scan: the match is the very first range. */
   @Benchmark
-  def containsNearStart(): Boolean = manyRanges.contains(0)
+  def containsNearStart(): Boolean = ranges.contains(0)
 
   /** A miss (falls in a gap), which still has to prove absence across the whole set. */
   @Benchmark
-  def containsMiss(): Boolean = manyRanges.contains(manyRanges.ranges.last.lo + 2)
+  def containsMiss(): Boolean = ranges.contains(ranges.ranges.last.lo + 2)
+
+  @Benchmark
+  def union(): CharSet = ranges.union(interleaved)
+
+  @Benchmark
+  def intersect(): CharSet = ranges.intersect(interleaved)
+
+  @Benchmark
+  def complement(): CharSet = ranges.complement
+
+  /** Sort-and-merge from scratch, worst-case (fully reversed) input order. */
+  @Benchmark
+  def normalize(): CharSet = CharSet.normalize(reversedRanges)
