@@ -15,7 +15,7 @@
 //> using publish.organization com.halotukozak
 //> using publish.name regex
 //> using publish.computeVersion git:tag
-//> using publish.description "TODO"
+//> using publish.description "A pure-Scala symbolic regex algebra with exact language containment (subset) checks, cross-built for JVM, Scala.js, and Scala Native"
 //> using publish.url https://github.com/halotukozak/regex
 //> using publish.license MIT
 //> using publish.vcs github:halotukozak/regex
