@@ -103,7 +103,7 @@ jobs:
       - uses: VirtusLab/scala-cli-setup@v1
       - name: Run benchmarks on current branch
         run: >
-          scala-cli run --jmh . --exclude "test/**" --
+          scala-cli --power run --jmh . --exclude "test/**" --
           -f 1 -wi 3 -i 5 -w 300ms -r 300ms -rf json -rff "$GITHUB_WORKSPACE/current-bench.json"
       - name: Run benchmarks on main
         # Reuses the PR's bench/ harness (and project.scala, for identical compiler
@@ -114,7 +114,7 @@ jobs:
           cp -r bench /tmp/main-baseline/bench
           cp project.scala /tmp/main-baseline/project.scala
           cd /tmp/main-baseline
-          scala-cli run --jmh . --exclude "test/**" -- \
+          scala-cli --power run --jmh . --exclude "test/**" -- \
             -f 1 -wi 3 -i 5 -w 300ms -r 300ms -rf json -rff "$GITHUB_WORKSPACE/main-bench.json"
       - name: Compare
         run: |
