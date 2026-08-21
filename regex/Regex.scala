@@ -1,10 +1,40 @@
 package halotukozak.regex
 
-import scala.annotation.{publicInBinary, tailrec, threadUnsafe}
+import scala.annotation.{publicInBinary, tailrec, threadUnsafe, unused}
 import scala.collection.immutable.SortedSet
 import scala.quoted.{Expr, FromExpr, Quotes, ToExpr, Varargs}
 import scala.util.control.TailCalls.{done, tailcall, TailRec}
 import scala.util.hashing.MurmurHash3
+
+/**
+ * The `args` parameter only exists so this satisfies the shape Scala's `StringContext`
+ * interpolation desugaring requires (`sc"..."` lowers to `sc.regex(interpolatedExprs*)`); the
+ * pattern itself is built purely from the string-literal parts, so splices are not supported.
+ *
+ * `sc` must be `inline` too: without it, the compiler binds the extension receiver to a
+ * synthetic proxy val before splicing, so `'sc` inside the macro body no longer refers to the
+ * literal `StringContext(...)` call and `scExpr.value` always sees `None` — silently
+ * degrading every `regex"..."` call to the runtime-parsing fallback instead of validating at
+ * compile time.
+ */
+extension (inline sc: StringContext) inline def regex(@unused args: Any*): Regex = ${ regexInterpolatorImpl('sc) }
+
+private def regexInterpolatorImpl(scExpr: Expr[StringContext])(using quotes: Quotes): Expr[Regex] =
+  import quotes.reflect.*
+  scExpr.value match
+    case Some(sc) =>
+      val pattern = sc.parts.mkString
+      RegexParser.parse(pattern) match
+        case Left(error) =>
+          report.errorAndAbort(s"Regex parse error: $error")
+        case Right(regex) =>
+          Expr(regex)
+    case None =>
+      '{
+        RegexParser.parse(${ scExpr }.parts.mkString) match
+          case Left(error) => throw IllegalArgumentException(s"Regex parse error: $error")
+          case Right(regex) => regex
+      }
 
 /**
  * A symbolic regex algebra with exact language containment ("is this pattern a subset of

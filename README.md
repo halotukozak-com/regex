@@ -70,6 +70,25 @@ val hexDigits = digits | Regex.range('a', 'f') | Regex.range('A', 'F')
 (`RegexParseError.InvalidSyntax`) from syntax this parser recognizes but doesn't support, like
 lookaround or backreferences (`RegexParseError.UnsupportedFeature`).
 
+### `regex"..."` interpolator
+
+For a pattern that's a string literal at the call site, `regex"..."` parses it at compile time
+instead, so a malformed or unsupported pattern is a compile error rather than a `Left` you have
+to remember to handle:
+
+```scala
+import halotukozak.regex.regex
+
+val idToken = regex"[a-zA-Z_][a-zA-Z0-9_]*" // Regex, built while compiling
+
+val bad = regex"(?=foo)" // doesn't compile: Regex parse error: UnsupportedFeature(...)
+```
+
+If the pattern isn't a literal (e.g. it's assembled into a `StringContext` at runtime), it falls
+back to parsing at runtime and throws `IllegalArgumentException` on failure instead. Note that
+`${...}` splices aren't currently supported — only the literal parts of the string are used, so
+`regex"a${x}b"` parses as `"ab"`, ignoring `x`.
+
 ## Status
 
 Early (`0.x`). The parser deliberately supports a subset of `java.util.regex.Pattern`'s syntax —
