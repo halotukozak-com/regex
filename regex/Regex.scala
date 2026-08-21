@@ -1,6 +1,7 @@
 package halotukozak.regex
 
 import scala.annotation.{publicInBinary, tailrec, threadUnsafe}
+import scala.collection.immutable.SortedSet
 import scala.quoted.{Expr, Quotes, ToExpr, Varargs}
 import scala.util.control.TailCalls.{done, tailcall, TailRec}
 import scala.util.hashing.MurmurHash3
@@ -77,6 +78,24 @@ enum Regex:
     case Inter(parts) => parts.forall(_.nullable)
     case Star(_) => true
     case Compl(inner) => !inner.nullable
+
+  /**
+   * Cached: sorted boundary points (range starts, and one-past-the-end of range ends) of
+   * every [[Chars]] leaf reachable from this node — the raw material `Subset.partitionReps`
+   * combines with the sentinels `0`/`CharSet.maxCodePoint + 1` to pick one representative
+   * code point per equivalence class of the alphabet partition. This is queried once per
+   * BFS state during `Subset.isEmptyImpl`/`subset`; recomputing it by re-walking the whole
+   * subtree on every state (most of which share large unchanged substructures across
+   * consecutive derivative steps) would repeatedly re-derive the same per-node result.
+   */
+  @threadUnsafe lazy val alphabetBoundaries: SortedSet[Int] = this match
+    case Eps | Empty => SortedSet.empty
+    case Chars(set) => SortedSet.from(set.ranges.iterator.flatMap(r => Iterator(r.lo, r.hi + 1)))
+    case Concat(a, b) => a.alphabetBoundaries ++ b.alphabetBoundaries
+    case Alt(parts) => parts.iterator.map(_.alphabetBoundaries).reduce(_ ++ _)
+    case Inter(parts) => parts.iterator.map(_.alphabetBoundaries).reduce(_ ++ _)
+    case Star(inner) => inner.alphabetBoundaries
+    case Compl(inner) => inner.alphabetBoundaries
 
   /** Concatenation: `this · other`. */
   infix def concat(other: Regex): Regex =
