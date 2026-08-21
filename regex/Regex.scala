@@ -55,7 +55,14 @@ enum Regex:
   case Compl private[Regex] (r: Regex)
 
   /** Concatenation: `this · other`. */
-  infix def concat(other: Regex): Regex = Regex.concatImpl(this, other).result
+  infix def concat(other: Regex): Regex =
+    def loop(a: Regex, b: Regex): TailRec[Regex] = (a, b) match
+      case (Empty, _) | (_, Empty) => done(Empty)
+      case (Eps, x) => done(x)
+      case (x, Eps) => done(x)
+      case (Concat(x, y), z) => tailcall(loop(y, z)).map(Concat(x, _))
+      case _ => done(Concat(a, b))
+    loop(this, other).result
 
   /** Alternation: `this | other`. */
   infix def |(other: Regex): Regex = Regex.alt(Set(this, other))
@@ -108,11 +115,11 @@ object Regex:
     if flat.isEmpty then Empty
     else if flat.sizeIs == 1 then flat.head
     else
-      val (chars, rest) = flat.partition(_.isInstanceOf[Chars])
+      val (chars, rest) = flat.partitionIsInstance[Chars]
       val merged: Set[Regex] =
         if chars.sizeIs <= 1 then flat
         else
-          val union = chars.iterator.collect { case Chars(s) => s }.foldLeft(CharSet.empty)(_ union _)
+          val union = chars.iterator.map(_.set).foldLeft(CharSet.empty)(_ union _)
           if union.isEmpty then rest else rest + Chars(union)
       if merged.sizeIs == 1 then merged.head else Alt(merged)
 
@@ -125,23 +132,16 @@ object Regex:
       .toSet
     if seq.isEmpty || seq.contains(Empty) then Empty
     else
-      val (chars, rest) = seq.partition(_.isInstanceOf[Chars])
+      val (chars, rest) = seq.partitionIsInstance[Chars]
       val merged =
         if chars.sizeIs <= 1 then Some(seq)
         else
-          val isect = chars.iterator.collect { case Chars(s) => s }.reduce(_ intersect _)
+          val isect = chars.iterator.map(_.set).reduce(_ intersect _)
           Option.unless(isect.isEmpty)(rest + Chars(isect))
       merged match
         case None => Empty
         case Some(m) if m.sizeIs == 1 => m.head
         case Some(m) => Inter(m)
-
-  private def concatImpl(a: Regex, b: Regex): TailRec[Regex] = (a, b) match
-    case (Empty, _) | (_, Empty) => done(Empty)
-    case (Eps, x) => done(x)
-    case (x, Eps) => done(x)
-    case (Concat(x, y), z) => tailcall(concatImpl(y, z)).map(Concat(x, _))
-    case _ => done(Concat(a, b))
 
   /** All-strings regex `Σ*`. */
   val all: Regex = Regex(CharSet.all).star
@@ -271,3 +271,8 @@ private[regex] object Range:
     def apply(x: Range)(using Quotes): Expr[Range] =
       '{ Range(${ Expr(x.lo) }, ${ Expr(x.hi) }) }
   // $COVERAGE-ON$
+
+extension [A, CC[X] <: Iterable[X]](xs: scala.collection.IterableOps[A, CC, CC[A]])
+  inline private def partitionIsInstance[T <: A]: (CC[T], CC[A]) =
+    val (matches, rest) = xs.partition(_.isInstanceOf[T])
+    (matches.asInstanceOf[CC[T]], rest)
