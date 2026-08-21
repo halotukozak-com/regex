@@ -203,12 +203,13 @@ object Regex:
 /**
  * Sorted, non-overlapping, merged ranges over Int code points.
  *
- * The primary constructor is restricted to [[CharSet]]'s own companion so every instance
- * is built through a normalizing smart constructor ([[CharSet.normalize]], [[CharSet.single]],
- * [[CharSet.range]], [[CharSet.empty]], [[CharSet.all]]); `complement` and `intersect` rely on
- * that invariant.
+ * The type itself is public - `given ToExpr[Regex]` needs to name it in code spliced into
+ * arbitrary external packages by macros - but the primary constructor is restricted to
+ * [[CharSet]]'s own companion so every instance is still built through a normalizing smart
+ * constructor ([[CharSet.normalize]], [[CharSet.single]], [[CharSet.range]], [[CharSet.empty]],
+ * [[CharSet.all]]); `complement` and `intersect` rely on that invariant.
  */
-private[regex] final class CharSet @publicInBinary private[CharSet] (val ranges: Vector[Range]) extends AnyVal:
+final class CharSet @publicInBinary private[CharSet] (val ranges: Vector[Range]) extends AnyVal:
 
   def contains(c: Int): Boolean =
     @tailrec
@@ -253,7 +254,7 @@ private[regex] final class CharSet @publicInBinary private[CharSet] (val ranges:
         loop(rs.tail, head.hi + 1, acc1)
     loop(ranges, 0, Vector.empty)
 
-private[regex] object CharSet:
+object CharSet:
 
   /** Upper bound used for complement. Covers all valid Unicode code points. */
   val maxCodePoint: Int = 0x10ffff
@@ -298,13 +299,13 @@ private[regex] object CharSet:
   // $COVERAGE-ON$
 
 /** Single closed code-point range. */
-private[regex] final case class Range(lo: Int, hi: Int):
+final case class Range(lo: Int, hi: Int):
   require(0 <= lo && lo <= hi && hi <= CharSet.maxCodePoint, s"invalid code-point range [$lo, $hi]")
 
   def this(lo: Char, hi: Char) = this(lo.toInt, hi.toInt)
 
   def contains(c: Int): Boolean = c >= lo && c <= hi
-private[regex] object Range:
+object Range:
   // $COVERAGE-OFF$
   given ToExpr[Range]:
     def apply(x: Range)(using Quotes): Expr[Range] =
