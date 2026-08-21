@@ -56,7 +56,7 @@ object Subset:
         case Some((s, rest)) =>
           if s.nullable then done(false)
           else
-            val derived = deriveAt(partitionReps(s), s, Nil)
+            val derived = deriveAt(partitionReps(s), 0, s, Nil)
             val next = derived.filterNot(visited.contains)
             tailcall(loop(rest.enqueueAll(next), visited ++ next))
     loop(Queue(r), Set(r)).result
@@ -98,15 +98,22 @@ object Subset:
     case Nil => acc
     case head :: tail => deriveAll(tail, c, deriveImpl(head, c).result :: acc)
 
+  /**
+   * `reps` is `Array[Int]`, not `List[Int]`: `List[Int]` boxes every element as a
+   * `java.lang.Integer` (Scala's immutable `List` isn't specialized for primitives), and
+   * `partitionReps` below rebuilds this collection fresh on every BFS state visited by
+   * `isEmptyImpl`/`subset`. `Array[Int]` is an unboxed primitive `int[]` on the JVM, so
+   * indexed iteration here allocates zero wrapper objects for the representatives.
+   */
   @tailrec
-  private def deriveAt(reps: List[Int], r: Regex, acc: List[Regex]): List[Regex] = reps match
-    case Nil => acc
-    case c :: tail => deriveAt(tail, r, deriveImpl(r, c).result :: acc)
+  private def deriveAt(reps: Array[Int], idx: Int, r: Regex, acc: List[Regex]): List[Regex] =
+    if idx >= reps.length then acc
+    else deriveAt(reps, idx + 1, r, deriveImpl(r, reps(idx)).result :: acc)
 
   /**
    * Returns one representative code point per equivalence class of the alphabet
    * partition induced by the character sets in `r`. Within a class, derivatives
    * yield the same residual, so testing one representative suffices.
    */
-  private def partitionReps(r: Regex): List[Int] =
-    (SortedSet(0, CharSet.maxCodePoint + 1) ++ r.alphabetBoundaries).init.toList
+  private def partitionReps(r: Regex): Array[Int] =
+    (SortedSet(0, CharSet.maxCodePoint + 1) ++ r.alphabetBoundaries).init.toArray
