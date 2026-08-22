@@ -16,6 +16,14 @@ class RegexParserTest extends munit.FunSuite:
     case Left(_: RegexParseError.UnsupportedFeature) => ()
     case other => fail(s"expected UnsupportedFeature, got $other")
 
+  test("RegexParseError's toString includes the message, position, and pattern") {
+    val err: RegexParseError = RegexParser.parse("(?=foo)").left.getOrElse(fail("expected a parse error"))
+    val text = err.toString
+    assert(text.contains("unsupported regex feature `lookahead`"), text)
+    assert(text.contains("at position 2"), text)
+    assert(text.contains("\"(?=foo)\""), text)
+  }
+
   test("parses literal string") {
     assertEquals(parse("abc"), Regex.literal("abc"))
   }

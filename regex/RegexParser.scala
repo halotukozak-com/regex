@@ -10,6 +10,14 @@ sealed trait RegexParseError:
   def position: Int
   def message: String
 
+  /**
+   * Overridden here (rather than left to each case class) so it's picked up by every case
+   * class's synthesized `toString` slot instead of the default field dump they'd otherwise
+   * generate (`InvalidSyntax((abc,3,expected \`)\` at position 3)`) — callers that just
+   * interpolate the error value directly get a readable message "for free".
+   */
+  override def toString: String = s"""$message (at position $position in "$pattern")"""
+
 object RegexParseError:
 
   /** Pattern is syntactically malformed (unterminated group, dangling backslash, etc.). */
