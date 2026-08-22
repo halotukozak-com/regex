@@ -77,7 +77,9 @@ class RegexInterpolatorTest extends munit.FunSuite:
     val errors = typeCheckErrors("""_root_.scala.StringContext("(?=foo)").regex()""")
     assertEquals(errors.size, 1)
     assert(
-      errors.head.message.contains("Regex parse error") && errors.head.message.contains("UnsupportedFeature"),
+      errors.head.message.contains("Regex parse error") &&
+        errors.head.message.contains("unsupported regex feature `lookahead`") &&
+        errors.head.message.contains("at position 2") && errors.head.message.contains(""""(?=foo)""""),
       s"unexpected message: ${errors.head.message}",
     )
   }
@@ -86,7 +88,8 @@ class RegexInterpolatorTest extends munit.FunSuite:
     val errors = typeCheckErrors("""_root_.scala.StringContext("(").regex()""")
     assertEquals(errors.size, 1)
     assert(
-      errors.head.message.contains("Regex parse error") && errors.head.message.contains("InvalidSyntax"),
+      errors.head.message.contains("Regex parse error") && errors.head.message.contains("at position 1") &&
+        errors.head.message.contains(""""(""""),
       s"unexpected message: ${errors.head.message}",
     )
   }
