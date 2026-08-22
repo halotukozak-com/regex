@@ -184,6 +184,33 @@ class RegexParserTest extends munit.FunSuite:
     assertInvalidSyntax(RegexParser.parse("[a-\\d]"))
   }
 
+  test("computes in-class && intersection") {
+    assertEquals(parse("[a-z&&[def]]"), Regex(CharSet.normalize(Range('d', 'f'))))
+  }
+
+  test("computes in-class && subtraction via negated nested subclass") {
+    assertEquals(
+      parse("[a-z&&[^bc]]"),
+      Regex(CharSet.range('a', 'z').intersect(CharSet.normalize(Range('b', 'c')).complement)),
+    )
+  }
+
+  test("chains multiple && intersections") {
+    assertEquals(parse("[a-z&&[^m-p]&&[^a-c]]"), parse("[d-lq-z]"))
+  }
+
+  test("unions a nested subclass alongside plain members") {
+    assertEquals(parse("[0-9[a-f]]"), Regex(CharSet.normalize(Range('0', '9'), Range('a', 'f'))))
+  }
+
+  test("a lone `&` is a literal member, not an intersection operator") {
+    assertEquals(parse("[a&b]"), Regex(CharSet.normalize(Range('&', '&'), Range('a', 'a'), Range('b', 'b'))))
+  }
+
+  test("rejects an empty && operand") {
+    assertInvalidSyntax(RegexParser.parse("[a-z&&]"))
+  }
+
   test("parses \\s and \\w shorthands") {
     assertEquals(
       parse("\\s"),
