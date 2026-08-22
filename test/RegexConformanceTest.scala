@@ -239,11 +239,7 @@ class RegexConformanceTest extends munit.FunSuite:
     assert(equiv("\\s", "[ \\t\\n\\r\\f\\x{B}]"))
   }
 
-  test(
-    ("dregex: shorthand classes nested inside a character class, e.g. `[\\d]` (testShortcutCharacterClasses)" +
-      " - TODO: not supported; readClassChar rejects \\d/\\s/\\w/... inside `[...]` outright," +
-      " unlike Java which allows and unions them").ignore,
-  ) {
+  test("dregex: shorthand classes nested inside a character class, e.g. `[\\d]` (testShortcutCharacterClasses)") {
     assert(equiv("\\d", "[\\d]"))
   }
 

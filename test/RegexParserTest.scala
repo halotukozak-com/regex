@@ -157,6 +157,33 @@ class RegexParserTest extends munit.FunSuite:
     )
   }
 
+  test("unions a shorthand escape into a character class") {
+    assertEquals(parse("[\\d]"), Regex(CharSet.range('0', '9')))
+    assertEquals(
+      parse("[\\da-f]"),
+      Regex(CharSet.range('0', '9').union(CharSet.normalize(Range('a', 'f')))),
+    )
+  }
+
+  test("unions a negated shorthand escape into a character class") {
+    assertEquals(parse("[\\D]"), Regex(CharSet.range('0', '9').complement))
+  }
+
+  test("negates the union of a mixed character class") {
+    assertEquals(parse("[^\\da-f]"), Regex(CharSet.range('0', '9').union(CharSet.normalize(Range('a', 'f'))).complement))
+  }
+
+  test("a shorthand escape can't start a range, but a following `-` is a literal member") {
+    assertEquals(
+      parse("[\\d-z]"),
+      Regex(CharSet.range('0', '9').union(CharSet.normalize(Range('-', '-'), Range('z', 'z')))),
+    )
+  }
+
+  test("rejects a shorthand escape ending a range") {
+    assertInvalidSyntax(RegexParser.parse("[a-\\d]"))
+  }
+
   test("parses \\s and \\w shorthands") {
     assertEquals(
       parse("\\s"),

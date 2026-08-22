@@ -37,8 +37,6 @@ object RegexParseError:
  * Known gaps relative to `java.util.regex.Pattern` (tracked, not yet implemented):
  *   - in-class intersection `[a-z&&[^g-p]]` is silently misparsed as literal chars instead of
  *     being rejected or computing the intersection
- *   - shorthand classes nested inside a character class, e.g. `[\d.]`, are rejected outright
- *     instead of being unioned into the class like Java does
  */
 object RegexParser:
 
@@ -221,32 +219,41 @@ object RegexParser:
       expect('[')
       val negated = !eof && cur == '^'
       if negated then pos += 1
-      @tailrec def loop(acc: Vector[Range]): Vector[Range] =
+      // A shorthand class item (\d, \s, \w, ...) contributes to `shorthand` directly and can't
+      // start or end a `-` range, matching Java: `[\d-z]` is digit, '-', and 'z' as three
+      // separate members (the dash just isn't treated as a range operator there), while
+      // `[a-\d]` is a syntax error (no single code point to range up to).
+      @tailrec def loop(ranges: Vector[Range], shorthand: CharSet): (Vector[Range], CharSet) =
         if !eof && cur != ']' then
-          val lo = readClassChar()
-          val hi =
-            if !eof && cur == '-' && pos + 1 < src.length && src.charAt(pos + 1) != ']' then
-              pos += 1
-              readClassChar()
-            else lo
-          if hi < lo then fail(s"invalid character-class range `${lo.toChar}-${hi.toChar}`: end must be >= start")
-          loop(acc :+ Range(lo, hi))
-        else acc
-      val ranges = loop(Vector.empty)
+          readClassChar() match
+            case Left(set) => loop(ranges, shorthand.union(set))
+            case Right(lo) =>
+              val hi =
+                if !eof && cur == '-' && pos + 1 < src.length && src.charAt(pos + 1) != ']' then
+                  pos += 1
+                  readClassChar() match
+                    case Left(_) => fail(s"invalid character-class range: shorthand escape can't end a range")
+                    case Right(hi) => hi
+                else lo
+              if hi < lo then fail(s"invalid character-class range `${lo.toChar}-${hi.toChar}`: end must be >= start")
+              loop(ranges :+ Range(lo, hi), shorthand)
+        else (ranges, shorthand)
+      val (ranges, shorthand) = loop(Vector.empty, CharSet.empty)
       expect(']')
-      if ranges.isEmpty then fail("empty character class")
-      val set = CharSet.normalize(ranges)
+      if ranges.isEmpty && shorthand.isEmpty then fail("empty character class")
+      // Skips the union (and the second normalizing pass it implies) in the common case where
+      // the class has no shorthand escape at all, matching what this did before they existed.
+      val set = if shorthand.isEmpty then CharSet.normalize(ranges) else CharSet.normalize(ranges).union(shorthand)
       val finalSet = if negated then set.complement else set
       Regex(finalSet)
 
-    private def readClassChar(): Int =
+    private def readClassChar(): Either[CharSet, Int] =
       if eof then fail("unterminated character class")
       (cur: @switch) match
         case '\\' =>
           pos += 1
-          readEscapedChar(inClass = true).getOrElse:
-            fail("shorthand escapes (\\d, \\s, \\w, ...) are not supported inside character classes")
-        case _ => consume().toInt
+          readEscapedChar(inClass = true)
+        case _ => Right(consume().toInt)
 
     private def parseEscape(): Regex =
       expect('\\')
