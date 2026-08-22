@@ -92,6 +92,4 @@ back to parsing at runtime and throws `IllegalArgumentException` on failure inst
 ## Status
 
 Early (`0.x`). The parser deliberately supports a subset of `java.util.regex.Pattern`'s syntax —
-see the package scaladoc for exactly what's in and what's out, including a couple of known gaps
-(in-class `&&` intersection, shorthand classes nested inside `[...]`) tracked as ignored tests
-with a `TODO`.
+see the package scaladoc for exactly what's in and what's out.
