@@ -4,6 +4,7 @@ import halotukozak.regex.Regex.*
 
 import scala.annotation.tailrec
 import scala.collection.immutable.{Queue, SortedSet}
+import scala.quoted.{Expr, Quotes, ToExpr}
 import scala.util.control.TailCalls.{done, tailcall, TailRec}
 
 /**
@@ -117,3 +118,18 @@ object Subset:
    */
   private def partitionReps(r: Regex): Array[Int] =
     (SortedSet(0, CharSet.maxCodePoint + 1) ++ r.alphabetBoundaries).init.toArray
+
+  // $COVERAGE-OFF$
+  /**
+   * Routed through `Subset.of` rather than splicing `Expr(s.underlying): Expr[Regex]` directly:
+   * a tree's static type, once spliced into a foreign compilation unit, is whatever its
+   * outermost call is *declared* to return - opaque-type transparency only holds lexically
+   * inside `Subset`'s own defining scope, at the point this `Expr` gets built, not at the
+   * (unrelated, external) point it's later typechecked after splicing. `Subset.of`'s declared
+   * signature returns `Subset`, so the call is externally `Subset`-typed no matter where the
+   * resulting tree lands - unlike a bare `Regex`-returning tree, which would need every splice
+   * site to already share this scope's transparency to typecheck as `Subset`.
+   */
+  given ToExpr[Subset]:
+    def apply(s: Subset)(using Quotes): Expr[Subset] = '{ Subset.of(${ Expr(s.underlying) }) }
+  // $COVERAGE-ON$
