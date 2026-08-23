@@ -1,9 +1,9 @@
 package halotukozak.regex
 
-import scala.annotation.tailrec
+import scala.annotation.{publicInBinary, tailrec}
 import scala.collection.immutable.SortedSet
 import scala.collection.mutable
-import scala.quoted.{Expr, Quotes, ToExpr, Varargs}
+import scala.quoted.{Expr, Quotes, ToExpr}
 import scala.util.chaining.scalaUtilChainingOps
 
 /**
@@ -32,7 +32,7 @@ import scala.util.chaining.scalaUtilChainingOps
  * below, both in the companion object. External code (including macro-spliced trees) goes
  * through the public `fromDfa` factory instead - see the note on `ToExpr[TokenMatcher]`.
  */
-final class TokenMatcher private (
+final class TokenMatcher @publicInBinary private (
   private val boundaries: Array[Int],
   private val transitions: Array[Int],
   private val accept: Array[Int],
@@ -78,10 +78,6 @@ object TokenMatcher:
 
   /** Build a matcher from pre-parsed subsets (use this from macros after compile-time parsing). */
   def fromSubsets(initial: Subset*): TokenMatcher = compile(initial.toIndexedSeq)
-
-  /** Rehydrates a `TokenMatcher` from its flat DFA arrays - the counterpart to `ToExpr[TokenMatcher]` below. */
-  def fromDfa(boundaries: Array[Int], transitions: Array[Int], accept: Array[Int]): TokenMatcher =
-    new TokenMatcher(boundaries, transitions, accept)
 
   private def compile(patterns: IndexedSeq[Subset]): TokenMatcher =
     def isDead(state: Seq[Subset]): Boolean = state.forall(_ == Subset.empty)
@@ -136,14 +132,5 @@ object TokenMatcher:
   /** Embeds the already-built DFA table as `Array[Int]` literals - no `Regex`/`Subset` involved. */
   given ToExpr[TokenMatcher]:
     def apply(m: TokenMatcher)(using Quotes): Expr[TokenMatcher] =
-      '{
-        TokenMatcher.fromDfa(
-          ${ intArrayExpr(m.boundaries) },
-          ${ intArrayExpr(m.transitions) },
-          ${ intArrayExpr(m.accept) },
-        )
-      }
-
-  private def intArrayExpr(arr: Array[Int])(using Quotes): Expr[Array[Int]] =
-    '{ Array[Int](${ Varargs(arr.toSeq.map(Expr(_))) }*) }
+      '{ TokenMatcher(${ Expr(m.boundaries) }, ${ Expr(m.transitions) }, ${ Expr(m.accept) }) }
   // $COVERAGE-ON$
