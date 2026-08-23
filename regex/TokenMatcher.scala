@@ -77,9 +77,9 @@ object TokenMatcher:
   def fromRegexes(initial: Regex*): TokenMatcher = fromSubsets(initial.map(Subset.of)*)
 
   /** Build a matcher from pre-parsed subsets (use this from macros after compile-time parsing). */
-  def fromSubsets(initial: Subset*): TokenMatcher = compile(initial.toIndexedSeq)
+  def fromSubsets(initial: Subset*): TokenMatcher = compile(initial)
 
-  private def compile(patterns: IndexedSeq[Subset]): TokenMatcher =
+  private def compile(patterns: Seq[Subset]): TokenMatcher =
     def isDead(state: Seq[Subset]): Boolean = state.forall(_ == Subset.empty)
 
     val boundaries = SortedSet(0, CharSet.maxCodePoint + 1)
@@ -109,7 +109,7 @@ object TokenMatcher:
 
     new TokenMatcher(boundaries, transitions.toArray, accept.toArray)
 
-  private def firstNullable(state: IndexedSeq[Subset]): Int =
+  private def firstNullable(state: Seq[Subset]): Int =
     state.iterator.zipWithIndex.collectFirst { case (sub, idx) if sub.nullable => idx }.getOrElse(-1)
 
   /** Largest `i` with `boundaries(i) <= c`; well-defined since `boundaries(0) == 0 <= c` always. */
