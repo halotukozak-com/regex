@@ -1,10 +1,8 @@
 package halotukozak.regex
 
 import scala.annotation.{publicInBinary, tailrec}
-import scala.collection.immutable.SortedSet
-import scala.collection.mutable
+import scala.collection.immutable.{Queue, SortedSet}
 import scala.quoted.{Expr, Quotes, ToExpr}
-import scala.util.chaining.scalaUtilChainingOps
 
 /**
  * Lexer-style longest-match tokenizer over a priority-ordered list of patterns.
@@ -80,34 +78,48 @@ object TokenMatcher:
   def fromSubsets(initial: Subset*): TokenMatcher = compile(initial)
 
   private def compile(patterns: Seq[Subset]): TokenMatcher =
-    def isDead(state: Seq[Subset]): Boolean = state.forall(_ == Subset.empty)
-
     val boundaries = SortedSet(0, CharSet.maxCodePoint + 1)
       .concat(patterns.iterator.flatMap(_.underlying.alphabetBoundaries))
       .init
       .toArray
-    val numPartitions = boundaries.length
 
-    val ids = mutable.LinkedHashMap(patterns -> 0)
-    val queue = mutable.Queue(patterns)
-    val transitions = mutable.ArrayBuffer.empty[Int]
-    val accept = mutable.ArrayBuffer.empty[Int]
+    def isDead(state: Seq[Subset]): Boolean = state.forall(_ == Subset.empty)
 
-    while queue.nonEmpty do
-      val state = queue.dequeue()
-      accept += firstNullable(state)
-      var i = 0
-      while i < numPartitions do
-        val next = state.map(_.derive(boundaries(i)))
-        transitions.addOne(if isDead(next) then -1
-        else
-          ids.getOrElseUpdate(
-            next,
-            ids.size.tap(_ => queue.enqueue(next)),
-          ))
-        i += 1
+    /**
+     * Derives `state` across every alphabet partition, assigning a fresh id (via `ids`) to any
+     * not-yet-seen resulting state. `discovered` lists those newly-seen states, in partition
+     * order, for the caller to enqueue for later exploration.
+     */
+    def deriveRow(
+      state: Seq[Subset],
+      ids: Map[Seq[Subset], Int],
+    ): (row: Vector[Int], ids: Map[Seq[Subset], Int], discovered: List[Seq[Subset]]) =
+      boundaries.indices.foldLeft((row = Vector.empty[Int], ids = ids, discovered = List.empty[Seq[Subset]])):
+        case ((row, ids, discovered), i) =>
+          val next = state.map(_.derive(boundaries(i)))
+          if isDead(next) then (row = row :+ -1, ids = ids, discovered = discovered)
+          else
+            ids.get(next) match
+              case Some(id) => (row = row :+ id, ids = ids, discovered = discovered)
+              case None =>
+                val id = ids.size
+                (row = row :+ id, ids = ids.updated(next, id), discovered = discovered :+ next)
 
-    new TokenMatcher(boundaries, transitions.toArray, accept.toArray)
+    @tailrec
+    def loop(
+      queue: Queue[Seq[Subset]],
+      ids: Map[Seq[Subset], Int],
+      transitions: Vector[Int],
+      accept: Vector[Int],
+    ): (transitions: Array[Int], accept: Array[Int]) =
+      queue.dequeueOption match
+        case None => (transitions = transitions.toArray, accept = accept.toArray)
+        case Some((state, rest)) =>
+          val (row, newIds, discovered) = deriveRow(state, ids)
+          loop(rest.enqueueAll(discovered), newIds, transitions ++ row, accept :+ firstNullable(state))
+
+    val (transitions, accept) = loop(Queue(patterns), Map(patterns -> 0), Vector.empty, Vector.empty)
+    new TokenMatcher(boundaries, transitions, accept)
 
   private def firstNullable(state: Seq[Subset]): Int =
     state.iterator.zipWithIndex.collectFirst { case (sub, idx) if sub.nullable => idx }.getOrElse(-1)
