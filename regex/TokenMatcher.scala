@@ -35,12 +35,17 @@ object TokenMatcher:
    * `accept(state)` is the lowest pattern index nullable in that state, or `-1` if none is.
    */
   /**
+   * Plain class, not a case class: `Array[Int]` fields would give a case class reference-based
+   * `equals`/`hashCode` and an unreadable `toString` anyway, and nothing here pattern-matches or
+   * `.copy`s a `Dfa` - construction is the only thing needed, and Scala 3's creator-application
+   * sugar (`Dfa(...)`) already covers that for a plain class.
+   *
    * Constructor kept private to this file - the only places that ever build a `Dfa` are
    * `compile` and `fromDfa` below, both in this same scope. External code (including macro-
    * spliced trees) goes through `fromDfa`, a plain `def` declared to return `TokenMatcher`,
    * not through this constructor directly - see the note on `ToExpr[TokenMatcher]`.
    */
-  final case class Dfa private[TokenMatcher] (boundaries: Array[Int], transitions: Array[Int], accept: Array[Int]):
+  final class Dfa private[TokenMatcher] (val boundaries: Array[Int], val transitions: Array[Int], val accept: Array[Int]):
     def numPartitions: Int = boundaries.length
 
   /** Build a matcher from pre-parsed regexes (use this from macros after compile-time parsing). */
