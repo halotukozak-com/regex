@@ -318,8 +318,12 @@ final class CharSet @publicInBinary private[CharSet] (private val ranges: ArrayS
   def |(other: CharSet): CharSet = union(other)
 
   infix def intersect(other: CharSet): CharSet =
+    // No sizeHint here (unlike union/normalize): the actual intersection is very often much
+    // smaller than min(ranges.length, other.ranges.length) - e.g. near-empty for disjoint or
+    // barely-overlapping sets, a common case (`[a-z] & [A-Z]`) - so hinting that upper bound
+    // pre-allocates array capacity that's usually mostly wasted, which benchmarked as a net
+    // loss versus just letting the builder grow on demand.
     val builder = ArraySeq.newBuilder[Range]
-    builder.sizeHint(math.min(ranges.length, other.ranges.length))
     var i = 0
     var j = 0
     while i < ranges.length && j < other.ranges.length do
