@@ -137,6 +137,43 @@ class SubsetTest extends munit.FunSuite:
     assert(!s("i").withAnySuffix.subset(s("if").withAnySuffix))
   }
 
+  // lookahead ---------------------------------------------------------------
+
+  test("nullable: standalone positive lookahead mirrors its body's nullability") {
+    assert(s(Regex.lookahead(Regex.lit('a').star, positive = true)).nullable)
+    assert(!s(Regex.lookahead(Regex.lit('a'), positive = true)).nullable)
+  }
+
+  test("nullable: standalone negative lookahead is the complement of its body's nullability") {
+    assert(!s(Regex.lookahead(Regex.lit('a').star, positive = false)).nullable)
+    assert(s(Regex.lookahead(Regex.lit('a'), positive = false)).nullable)
+  }
+
+  test("derive: a bare lookahead never consumes a character") {
+    assertEquals(s(Regex.lookahead(Regex.lit('a'), positive = true)).derive('a'.toInt).underlying, Empty)
+    assertEquals(s(Regex.lookahead(Regex.lit('a'), positive = false)).derive('a'.toInt).underlying, Empty)
+  }
+
+  test("derive: positive lookahead gates the concatenation that follows it") {
+    val pattern = s(Regex.lookahead(Regex.lit('a'), positive = true).concat(Regex.lit('a')))
+    assert(pattern.derive('a'.toInt).nullable)
+    assert(pattern.derive('b'.toInt).isEmpty)
+  }
+
+  test("derive: negative lookahead excludes the string it names, even though the body would accept it") {
+    val body = Regex.lit('a') | Regex.lit('b')
+    val pattern = s(Regex.lookahead(Regex.lit('a'), positive = false).concat(body))
+    assert(!pattern.derive('a'.toInt).nullable)
+    assert(pattern.derive('b'.toInt).nullable)
+  }
+
+  test("subset: lookahead narrows a language without changing string length") {
+    val plain = s("[ab]")
+    val gated = s(Regex.lookahead(Regex.lit('a'), positive = true).concat(Regex(CharSet.normalize(Range('a', 'b')))))
+    assert(gated.subset(plain))
+    assert(!plain.subset(gated))
+  }
+
   // parse / of constructors -----------------------------------------------
 
   test("Subset.parse and Subset.of compose") {

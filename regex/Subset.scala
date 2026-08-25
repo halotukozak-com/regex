@@ -64,6 +64,37 @@ object Subset:
       a match
         case Eps | Empty => Empty
         case Chars(set) => if set.contains(c) then Eps else Empty
+
+        /**
+         * A leading lookahead can't be derived independently of what follows it - `Look(r,
+         * _).derive` alone is always `Empty` (see below), which would silently drop the case
+         * where `r` isn't satisfiable yet but becomes so after consuming `c`. So `r`'s own
+         * derivative has to be threaded alongside `b`'s: `r.derive(c).concat(Regex.all)` is
+         * exactly "does the remaining string (after `c`) have a prefix satisfying what's left
+         * of `r`", which is intersected into `b`'s residual - `withAnySuffix` written out
+         * inline since `Subset.withAnySuffix` isn't in scope for a bare `Regex`.
+         */
+        case Concat(Look(r, positive), b) =>
+          val bc = b.derive(c)
+          if positive then if r.nullable then bc else bc & (r.derive(c).concat(Regex.all))
+          else if r.nullable then Empty
+          else bc & !r.derive(c).concat(Regex.all)
+
+        /**
+         * `(A|B)·b` is ordinarily fine to derive via the generic `Concat` rule below - it's
+         * equivalent to `A·b | B·b` for ordinary regex, since `D_c` distributes over `|` either
+         * way. But when a branch is itself a leading lookahead, that equivalence is the only
+         * route to a correct answer: the generic rule only ever consults `Alt(parts).nullable`
+         * and `Alt(parts).derive(c)`, both computed branch-independently - `Look(r,_).derive(c)`
+         * is unconditionally `Empty` (see below), which would silently discard exactly the case
+         * above exists to handle (the assertion becoming satisfiable only after consuming `c`).
+         * Redistributing first, so each branch reaches the `Concat(Look(...), _)` case above
+         * (or the ordinary rule, for a non-lookahead branch) on its own, avoids that loss. Only
+         * taken when a branch actually needs it, to leave ordinary alternations (the overwhelming
+         * majority) on the cheaper generic path below, sharing `b` instead of duplicating it.
+         */
+        case Concat(Alt(parts), b) if parts.exists(hasLeadingLook) =>
+          Regex.alt(deriveAllConcat(parts.toList, b, c, Nil))
         case Concat(a, b) =>
           val acb = a.derive(c).concat(b)
           if a.nullable then acb | b.derive(c)
@@ -72,6 +103,9 @@ object Subset:
         case Inter(parts) => Regex.inter(deriveAll(parts.toList, c, Nil))
         case s @ Star(inner) => inner.derive(c).concat(s)
         case Compl(inner) => !inner.derive(c)
+
+        /** Zero-width: `L(Look(r, _)) ⊆ {ε}`, so no nonempty string can start it. */
+        case Look(_, _) => Empty
 
   /**
    * Plain `@tailrec` loops, not `TailRec`-trampolined: unlike `deriveImpl`'s tree recursion
@@ -96,6 +130,15 @@ object Subset:
     case head :: tail => deriveAll(tail, c, head.derive(c) :: acc)
 
   /**
+   * Like [[deriveAll]], but concatenates each part with `b` before deriving - see the
+   * `Concat(Alt(parts), b)` case above.
+   */
+  @tailrec
+  private def deriveAllConcat(parts: List[Regex], b: Regex, c: Int, acc: List[Regex]): List[Regex] = parts match
+    case Nil => acc
+    case head :: tail => deriveAllConcat(tail, b, c, head.concat(b).derive(c) :: acc)
+
+  /**
    * `reps` is `Array[Int]`, not `List[Int]`: `List[Int]` boxes every element as a
    * `java.lang.Integer` (Scala's immutable `List` isn't specialized for primitives), and
    * `partitionReps` below rebuilds this collection fresh on every BFS state visited by
@@ -106,6 +149,17 @@ object Subset:
   private def deriveAt(reps: Array[Int], idx: Int, r: Regex, acc: List[Regex]): List[Regex] =
     if idx >= reps.length then acc
     else deriveAt(reps, idx + 1, r, r.derive(reps(idx)) :: acc)
+
+  /**
+   * `true` iff `r` is a lookahead, or a (right-associated, per the `concat` smart constructor)
+   * chain of concatenations headed by one - i.e. iff `r.concat(b)` would need the
+   * `Concat(Look(...), _)` handling above rather than the ordinary `Concat` rule.
+   */
+  @tailrec
+  private def hasLeadingLook(r: Regex): Boolean = r match
+    case Look(_, _) => true
+    case Concat(a, _) => hasLeadingLook(a)
+    case _ => false
 
   /**
    * Returns one representative code point per equivalence class of the alphabet

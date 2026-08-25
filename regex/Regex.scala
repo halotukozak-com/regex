@@ -52,11 +52,11 @@ private def regexInterpolatorImpl(scExpr: Expr[StringContext])(using quotes: Quo
  * Supports literals, escapes (\d \D \s \S \w \W \t \n \r \f \a \e \v \cX \0[n[n]] \xhh
  * \x{h...h} \uhhhh \Q...\E \R and meta-escapes), character classes (including ranges, negation,
  * nested subclasses, and `&&` intersection), `.`, alternation `|`, non-capturing-style groups
- * `(...)`, quantifiers `*` `+` `?` `{n}` `{n,}` `{n,m}` (bounds capped at
- * [[Regex.maxRepeatBound]]).
+ * `(...)`, lookahead `(?=...)` `(?!...)`, quantifiers `*` `+` `?` `{n}` `{n,}` `{n,m}` (bounds
+ * capped at [[Regex.maxRepeatBound]]).
  *
  * Unsupported (parser returns [[RegexParseError.UnsupportedFeature]]):
- * anchors `^` `$` `\b` `\B` `\A` `\Z` `\z` `\G`, lookaround `(?=` `(?!` `(?<=` `(?<!`,
+ * anchors `^` `$` `\b` `\B` `\A` `\Z` `\z` `\G`, lookbehind `(?<=` `(?<!`,
  * backreferences `\1`..`\9` `\k<name>` `\g{...}`, Unicode properties `\p{...}`, grapheme
  * clusters `\X`.
  *
@@ -89,6 +89,13 @@ enum Regex:
   case Compl private[Regex] (r: Regex)
 
   /**
+   * Zero-width lookahead assertion. `positive = true` is `(?=r)`: holds at a position iff some
+   * prefix of the string remaining there is in `L(r)`, without consuming any of it.
+   * `positive = false` is `(?!r)`: holds iff no such prefix exists.
+   */
+  case Look private[Regex] (r: Regex, positive: Boolean)
+
+  /**
    * Cached: this tree is immutable and gets hashed repeatedly by the `Set`-based ACI
    * normalization in `Regex.alt`/`Regex.inter` and by the visited-state set driving
    * Brzozowski derivative exploration in [[Subset]] — recomputing structurally every time
@@ -110,6 +117,7 @@ enum Regex:
     case Inter(parts) => parts.forall(_.nullable)
     case Star(_) => true
     case Compl(inner) => !inner.nullable
+    case Look(r, positive) => if positive then r.nullable else !r.nullable
 
   /**
    * Cached: sorted boundary points (range starts, and one-past-the-end of range ends) of
@@ -128,6 +136,7 @@ enum Regex:
     case Inter(parts) => parts.iterator.map(_.alphabetBoundaries).reduce(_ ++ _)
     case Star(inner) => inner.alphabetBoundaries
     case Compl(inner) => inner.alphabetBoundaries
+    case Look(r, _) => r.alphabetBoundaries
 
   /** Alternation: `this | other`. */
   infix def |(other: Regex): Regex = Regex.alt(Set(this, other))
@@ -219,6 +228,16 @@ object Regex:
         case m if m.sizeIs == 1 => m.head
         case m => Inter(m)
 
+  /**
+   * Zero-width lookahead assertion: `Regex.lookahead(r, true)` is `(?=r)`, `Regex.lookahead(r,
+   * false)` is `(?!r)`. Degenerates to [[Eps]]/[[Empty]] directly when `r` itself is
+   * [[Eps]]/[[Empty]], since the assertion is then a constant regardless of context.
+   */
+  def lookahead(r: Regex, positive: Boolean): Regex = r match
+    case Empty => if positive then Empty else Eps
+    case Eps => if positive then Eps else Empty
+    case _ => Look(r, positive)
+
   /** All-strings regex `Σ*`. */
   val all: Regex = Regex(CharSet.all).star
 
@@ -248,6 +267,7 @@ object Regex:
         '{ Regex.inter($partsExpr) }
       case Star(inner) => '{ ${ Expr(inner) }.star }
       case Compl(inner) => '{ ! ${ Expr(inner) } }
+      case Look(r, positive) => '{ Regex.lookahead(${ Expr(r) }, ${ Expr(positive) }) }
   // $COVERAGE-ON$
 
 /**
