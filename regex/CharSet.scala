@@ -9,20 +9,12 @@ import scala.quoted.{Expr, FromExpr, Quotes, ToExpr, Varargs}
  *
  * Opaque over [[ArraySeq]]`[Range]`: every instance is built through a normalizing smart
  * constructor ([[CharSet.normalize]], [[CharSet.single]], [[CharSet.range]], [[CharSet.empty]],
- * [[CharSet.all]], [[CharSet.of]]) - `complement`/`intersect` rely on that invariant - and,
- * being `opaque` rather than an `AnyVal` value class, carries zero runtime wrapper at all: no
- * boxing when stored in a `Regex.Chars` field, a collection, or as a type parameter (an
- * `AnyVal` still boxes in those contexts). `ArraySeq`'s true O(1) array-backed indexed access
+ * [[CharSet.all]], [[CharSet.of]]) - `complement`/`intersect` rely on that invariant.
+ * `ArraySeq`'s true O(1) array-backed indexed access
  * (`contains`'s binary search, `intersect`/`complement`'s indexed loops) and structural
  * `equals`/`hashCode` (which `Regex`'s `Set`-based ACI normalization and cached `hashCode`
  * rely on) come along for free from the underlying representation.
- *
- * Declared in its own file, not alongside [[Regex]]: a top-level `opaque type` is transparent
- * to its *whole enclosing file*, not just its companion object - if this lived in Regex.scala,
- * `Regex.alt`/`Regex.inter`'s own `_ union _`/`_ intersect _` calls would silently resolve to
- * `ArraySeq`/`Seq`'s *native* `union`/`intersect` (list concatenation / multiset intersection)
- * instead of these extension methods, since the two have colliding names and compatible
- * signatures. Same reasoning [[Subset]] is already split out from `Regex.scala`.
+ 
  */
 opaque type CharSet = ArraySeq[Range]
 
