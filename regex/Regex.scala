@@ -318,17 +318,18 @@ final class CharSet @publicInBinary private[CharSet] (private val ranges: ArrayS
   def |(other: CharSet): CharSet = union(other)
 
   infix def intersect(other: CharSet): CharSet =
-    @tailrec
-    def loop(i: Int, j: Int, acc: Vector[Range]): Vector[Range] =
-      if i >= ranges.length || j >= other.ranges.length then acc
-      else
-        val a = ranges(i)
-        val b = other.ranges(j)
-        val lo = math.max(a.lo, b.lo)
-        val hi = math.min(a.hi, b.hi)
-        val acc1 = if lo <= hi then acc :+ Range(lo, hi) else acc
-        if a.hi < b.hi then loop(i + 1, j, acc1) else loop(i, j + 1, acc1)
-    CharSet(ArraySeq.from(loop(0, 0, Vector.empty)))
+    val builder = ArraySeq.newBuilder[Range]
+    builder.sizeHint(math.min(ranges.length, other.ranges.length))
+    var i = 0
+    var j = 0
+    while i < ranges.length && j < other.ranges.length do
+      val a = ranges(i)
+      val b = other.ranges(j)
+      val lo = math.max(a.lo, b.lo)
+      val hi = math.min(a.hi, b.hi)
+      if lo <= hi then builder += Range(lo, hi)
+      if a.hi < b.hi then i += 1 else j += 1
+    CharSet(builder.result())
 
   def &(other: CharSet): CharSet = intersect(other)
 
@@ -336,16 +337,16 @@ final class CharSet @publicInBinary private[CharSet] (private val ranges: ArrayS
     // Walks `ranges` by index rather than `.head`/`.tail`: unlike `Vector`, slicing off the
     // head of an array-backed `ArraySeq` is O(n) (a fresh array copy), which would make this
     // loop O(n^2) overall instead of O(n).
-    @tailrec
-    def loop(idx: Int, prev: Int, acc: Vector[Range]): CharSet =
-      if idx >= ranges.length then
-        if prev <= CharSet.maxCodePoint then CharSet(ArraySeq.from(acc :+ Range(prev, CharSet.maxCodePoint)))
-        else CharSet(ArraySeq.from(acc))
-      else
-        val head = ranges(idx)
-        val acc1 = if prev <= head.lo - 1 then acc :+ Range(prev, head.lo - 1) else acc
-        loop(idx + 1, head.hi + 1, acc1)
-    loop(0, 0, Vector.empty)
+    val builder = ArraySeq.newBuilder[Range]
+    var idx = 0
+    var prev = 0
+    while idx < ranges.length do
+      val head = ranges(idx)
+      if prev <= head.lo - 1 then builder += Range(prev, head.lo - 1)
+      prev = head.hi + 1
+      idx += 1
+    if prev <= CharSet.maxCodePoint then builder += Range(prev, CharSet.maxCodePoint)
+    CharSet(builder.result())
 
   def iterator: Iterator[Range] = ranges.iterator
 
@@ -373,16 +374,25 @@ object CharSet:
 
   /** Builds a normalized [[CharSet]] from arbitrary (possibly overlapping) ranges. */
   def normalize(rs: Iterable[Range]): CharSet =
-    val (acc, last) = rs.toVector
-      .sortBy(_.lo)
-      .foldLeft((Vector.empty[Range], null: Range | Null)):
-        case ((acc, null), r) => (acc, r)
-        case ((acc, cur: Range), r) =>
-          if r.lo <= cur.hi + 1 then (acc, Range(cur.lo, math.max(cur.hi, r.hi)))
-          else (acc :+ cur, r)
-    CharSet(ArraySeq.from(last match
-      case null => acc
-      case r => acc :+ r))
+    val sorted = rs.toArray
+    sorted.sortInPlaceBy(_.lo)
+    val builder = ArraySeq.newBuilder[Range]
+    builder.sizeHint(sorted.length)
+    var cur: Range | Null = null
+    var i = 0
+    while i < sorted.length do
+      val r = sorted(i)
+      cur match
+        case null => cur = r
+        case c if r.lo <= c.hi + 1 => cur = Range(c.lo, math.max(c.hi, r.hi))
+        case c =>
+          builder += c
+          cur = r
+      i += 1
+    cur match
+      case null => ()
+      case c => builder += c
+    CharSet(builder.result())
 
   def normalize(ranges: Range*): CharSet = normalize(ranges)
 
@@ -393,11 +403,16 @@ object CharSet:
       '{ CharSet(ArraySeq(${ Varargs(rangeExprs) }*)) }
 
   given FromExpr[CharSet]:
-    private def fromRanges(exprs: Seq[Expr[Range]])(using Quotes) =
-      val ranges = exprs.foldLeft(Option(Vector.empty[Range])):
-        case (Some(acc), Expr(range)) => Some(acc :+ range)
-        case _ => None
-      ranges.map(rs => new CharSet(ArraySeq.from(rs)))
+    private def fromRanges(exprs: Seq[Expr[Range]])(using Quotes): Option[CharSet] =
+      val builder = ArraySeq.newBuilder[Range]
+      builder.sizeHint(exprs.length)
+      val it = exprs.iterator
+      var ok = true
+      while ok && it.hasNext do
+        it.next() match
+          case Expr(range) => builder += range
+          case _ => ok = false
+      if ok then Some(new CharSet(builder.result())) else None
 
     override def unapply(s: Expr[CharSet])(using Quotes): Option[CharSet] = s match
       case '{ CharSet(ArraySeq(${ Varargs(rangeExprs) }*)) } => fromRanges(rangeExprs)
