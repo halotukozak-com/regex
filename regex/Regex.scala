@@ -291,12 +291,9 @@ final class CharSet @publicInBinary private[CharSet] (private val ranges: ArrayS
    * two-pointer walk, just coalescing overlapping/adjacent ranges (`normalize`'s rule) instead
    * of intersecting them.
    *
-   * Written as a `while` loop writing straight into an `ArraySeq.newBuilder` (sized up front
-   * via `sizeHint`) rather than an immutable `Vector` accumulator converted to `ArraySeq` at
-   * the end (`intersect`/`complement`/`normalize`'s style, and this method's own first cut):
-   * benchmarked ~2.3-2.8x faster across `rangeCount` 50-5000, since it skips both the `Vector`
-   * node allocations and the full extra copy `ArraySeq.from` needs to flatten them into an
-   * array.
+   * Writes straight into an `ArraySeq.newBuilder`, unlike `intersect`/`complement`/`normalize`
+   * which accumulate into a `Vector` and convert via `ArraySeq.from` at the end - skips both
+   * the `Vector` node allocations and that final copy.
    */
   infix def union(other: CharSet): CharSet =
     val builder = ArraySeq.newBuilder[Range]
