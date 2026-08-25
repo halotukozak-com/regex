@@ -97,7 +97,15 @@ enum Regex:
     case Star(inner) => inner.alphabetBoundaries
     case Compl(inner) => inner.alphabetBoundaries
 
-  /** Concatenation: `this · other`. */
+  /**
+   * Not `deepRecursive`: the recursive step needs to advance to `y` (`y.concat(z)`), a
+   * receiver different from `this` - `deepRecursive` only threads explicit arguments through
+   * its trampoline, so a self-call reached via a different receiver's `Select` (as opposed to
+   * an extension method's receiver, which compiles to an ordinary curried argument) would have
+   * that receiver silently dropped, leaving the trampoline stuck recursing against the original
+   * `this` forever. Hand-rolled `TailCalls` trampolining sidesteps that by threading both sides
+   * of the concatenation explicitly.
+   */
   infix def concat(other: Regex): Regex =
     def loop(a: Regex, b: Regex): TailRec[Regex] = (a, b) match
       case (Empty, _) | (_, Empty) => done(Empty)

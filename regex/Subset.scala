@@ -1,10 +1,10 @@
 package halotukozak.regex
 
-import halotukozak.regex.Regex.*
+import halotukozak.commons.deepRecursive
+import halotukozak.regex.Regex.{Empty, Eps, *}
 
 import scala.annotation.tailrec
 import scala.collection.immutable.{Queue, SortedSet}
-import scala.util.control.TailCalls.{done, tailcall, TailRec}
 
 /**
  * Opaque view over a [[Regex]] exposing Brzozowski-derivative based language emptiness
@@ -41,40 +41,34 @@ object Subset:
     def properSubset(b: Subset): Boolean = a.subset(b) && !b.subset(a)
 
     /** `true` iff `L(a) = ∅`. */
-    def isEmpty: Boolean = isEmptyImpl(a)
+    def isEmpty: Boolean =
+      @tailrec def loop(queue: Queue[Regex], visited: Set[Regex]): Boolean =
+        queue.dequeueOption match
+          case None => true
+          case Some((s, rest)) =>
+            if s.nullable then false
+            else
+              val derived = deriveAt(partitionReps(s), 0, s, Nil)
+              val next = derived.filterNot(visited.contains)
+              loop(rest.enqueueAll(next), visited ++ next)
+
+      loop(Queue(a), Set(a))
 
     /** `true` iff `ε ∈ L(a)`. */
     def nullable: Boolean = a.nullable
 
     /** Brzozowski derivative of `a` with respect to code point `c`. */
-    def derive(c: Int): Subset = deriveImpl(a, c).result
-
-  private def isEmptyImpl(r: Regex): Boolean =
-    def loop(queue: Queue[Regex], visited: Set[Regex]): TailRec[Boolean] =
-      queue.dequeueOption match
-        case None => done(true)
-        case Some((s, rest)) =>
-          if s.nullable then done(false)
-          else
-            val derived = deriveAt(partitionReps(s), 0, s, Nil)
-            val next = derived.filterNot(visited.contains)
-            tailcall(loop(rest.enqueueAll(next), visited ++ next))
-    loop(Queue(r), Set(r)).result
-
-  private def deriveImpl(r: Regex, c: Int): TailRec[Regex] = r match
-    case Eps | Empty => done(Empty)
-    case Chars(set) => done(if set.contains(c) then Eps else Empty)
-    case Concat(a, b) =>
-      for
-        da <- tailcall(deriveImpl(a, c))
-        out <-
-          if a.nullable then tailcall(deriveImpl(b, c)).map(db => da.concat(b) | db)
-          else done(da.concat(b))
-      yield out
-    case Alt(parts) => done(Regex.alt(deriveAll(parts.toList, c, Nil)))
-    case Inter(parts) => done(Regex.inter(deriveAll(parts.toList, c, Nil)))
-    case s @ Star(inner) => tailcall(deriveImpl(inner, c)).map(d => d.concat(s))
-    case Compl(inner) => tailcall(deriveImpl(inner, c)).map(!_)
+    def derive(c: Int): Subset = deepRecursive:
+      a match
+        case Eps | Empty => Empty
+        case Chars(set) => if set.contains(c) then Eps else Empty
+        case Concat(a, b) =>
+          if a.nullable then a.derive(c).concat(b) | b.derive(c)
+          else a.derive(c).concat(b)
+        case Alt(parts) => Regex.alt(deriveAll(parts.toList, c, Nil))
+        case Inter(parts) => Regex.inter(deriveAll(parts.toList, c, Nil))
+        case s @ Star(inner) => inner.derive(c).concat(s)
+        case Compl(inner) => !inner.derive(c)
 
   /**
    * Plain `@tailrec` loops, not `TailRec`-trampolined: unlike `deriveImpl`'s tree recursion
@@ -96,7 +90,7 @@ object Subset:
   @tailrec
   private def deriveAll(parts: List[Regex], c: Int, acc: List[Regex]): List[Regex] = parts match
     case Nil => acc
-    case head :: tail => deriveAll(tail, c, deriveImpl(head, c).result :: acc)
+    case head :: tail => deriveAll(tail, c, head.derive(c) :: acc)
 
   /**
    * `reps` is `Array[Int]`, not `List[Int]`: `List[Int]` boxes every element as a
@@ -108,7 +102,7 @@ object Subset:
   @tailrec
   private def deriveAt(reps: Array[Int], idx: Int, r: Regex, acc: List[Regex]): List[Regex] =
     if idx >= reps.length then acc
-    else deriveAt(reps, idx + 1, r, deriveImpl(r, reps(idx)).result :: acc)
+    else deriveAt(reps, idx + 1, r, r.derive(reps(idx)) :: acc)
 
   /**
    * Returns one representative code point per equivalence class of the alphabet
