@@ -16,6 +16,14 @@ class RegexParserTest extends munit.FunSuite:
     case Left(_: RegexParseError.UnsupportedFeature) => ()
     case other => fail(s"expected UnsupportedFeature, got $other")
 
+  test("RegexParseError's toString includes the message, position, and pattern") {
+    val err: RegexParseError = RegexParser.parse("(?=foo)").left.getOrElse(fail("expected a parse error"))
+    val text = err.toString
+    assert(text.contains("unsupported regex feature `lookahead`"), text)
+    assert(text.contains("at position 2"), text)
+    assert(text.contains("\"(?=foo)\""), text)
+  }
+
   test("parses literal string") {
     assertEquals(parse("abc"), Regex.literal("abc"))
   }
@@ -155,6 +163,60 @@ class RegexParserTest extends munit.FunSuite:
         ),
       ),
     )
+  }
+
+  test("unions a shorthand escape into a character class") {
+    assertEquals(parse("[\\d]"), Regex(CharSet.range('0', '9')))
+    assertEquals(
+      parse("[\\da-f]"),
+      Regex(CharSet.range('0', '9').union(CharSet.normalize(Range('a', 'f')))),
+    )
+  }
+
+  test("unions a negated shorthand escape into a character class") {
+    assertEquals(parse("[\\D]"), Regex(CharSet.range('0', '9').complement))
+  }
+
+  test("negates the union of a mixed character class") {
+    assertEquals(parse("[^\\da-f]"), Regex(CharSet.range('0', '9').union(CharSet.normalize(Range('a', 'f'))).complement))
+  }
+
+  test("a shorthand escape can't start a range, but a following `-` is a literal member") {
+    assertEquals(
+      parse("[\\d-z]"),
+      Regex(CharSet.range('0', '9').union(CharSet.normalize(Range('-', '-'), Range('z', 'z')))),
+    )
+  }
+
+  test("rejects a shorthand escape ending a range") {
+    assertInvalidSyntax(RegexParser.parse("[a-\\d]"))
+  }
+
+  test("computes in-class && intersection") {
+    assertEquals(parse("[a-z&&[def]]"), Regex(CharSet.normalize(Range('d', 'f'))))
+  }
+
+  test("computes in-class && subtraction via negated nested subclass") {
+    assertEquals(
+      parse("[a-z&&[^bc]]"),
+      Regex(CharSet.range('a', 'z').intersect(CharSet.normalize(Range('b', 'c')).complement)),
+    )
+  }
+
+  test("chains multiple && intersections") {
+    assertEquals(parse("[a-z&&[^m-p]&&[^a-c]]"), parse("[d-lq-z]"))
+  }
+
+  test("unions a nested subclass alongside plain members") {
+    assertEquals(parse("[0-9[a-f]]"), Regex(CharSet.normalize(Range('0', '9'), Range('a', 'f'))))
+  }
+
+  test("a lone `&` is a literal member, not an intersection operator") {
+    assertEquals(parse("[a&b]"), Regex(CharSet.normalize(Range('&', '&'), Range('a', 'a'), Range('b', 'b'))))
+  }
+
+  test("rejects an empty && operand") {
+    assertInvalidSyntax(RegexParser.parse("[a-z&&]"))
   }
 
   test("parses \\s and \\w shorthands") {

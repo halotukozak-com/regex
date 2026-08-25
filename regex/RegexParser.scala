@@ -10,6 +10,14 @@ sealed trait RegexParseError:
   def position: Int
   def message: String
 
+  /**
+   * Overridden here (rather than left to each case class) so it's picked up by every case
+   * class's synthesized `toString` slot instead of the default field dump they'd otherwise
+   * generate (`InvalidSyntax((abc,3,expected \`)\` at position 3)`) — callers that just
+   * interpolate the error value directly get a readable message "for free".
+   */
+  override def toString: String = s"""$message (at position $position in "$pattern")"""
+
 object RegexParseError:
 
   /** Pattern is syntactically malformed (unterminated group, dangling backslash, etc.). */
@@ -24,8 +32,9 @@ object RegexParseError:
  *
  * Supported subset (see [[Regex]] doc): literals, escapes (\d \D \s \S \w \W \t \n \r \f
  * \a \e \v \cX \0[n[n]] \xhh \x{h...h} \uhhhh \Q...\E \R and meta-escapes \. \* \+ \? \(
- * \) \[ \] \{ \} \| \^ \$ \-), `.`, char classes `[...]` `[^...]` with ranges (`\b` inside
- * a class means backspace, matching Java), alternation `|`, groups `(...)` (capturing or
+ * \) \[ \] \{ \} \| \^ \$ \-), `.`, char classes `[...]` `[^...]` with ranges, nested shorthand
+ * escapes (`[\da-f]`), nested subclasses, and `&&` intersection (`[a-z&&[^aeiou]]`) (`\b`
+ * inside a class means backspace, matching Java), alternation `|`, groups `(...)` (capturing or
  * `(?:...)`, flag groups are NOT supported), quantifiers `*` `+` `?` `{n}` `{n,}` `{n,m}`
  * (bounds capped at [[Regex.maxRepeatBound]]).
  *
@@ -33,12 +42,6 @@ object RegexParseError:
  * `\1`..`\9` `\k<name>` `\g{...}`, Unicode properties `\p{...}`, grapheme clusters `\X`,
  * named groups, flag groups. Any other undefined letter escape (e.g. `\m`, `\y`, `\q`) is
  * rejected as invalid syntax, matching `java.util.regex.Pattern`'s own behavior.
- *
- * Known gaps relative to `java.util.regex.Pattern` (tracked, not yet implemented):
- *   - in-class intersection `[a-z&&[^g-p]]` is silently misparsed as literal chars instead of
- *     being rejected or computing the intersection
- *   - shorthand classes nested inside a character class, e.g. `[\d.]`, are rejected outright
- *     instead of being unioned into the class like Java does
  */
 object RegexParser:
 
@@ -217,36 +220,78 @@ object RegexParser:
           else unsupported("named group")
         case _ => unsupported("flag group")
 
-    private def parseCharClass(): Regex =
+    private def parseCharClass(): Regex = Regex(parseClassBody())
+
+    /** True at a `&&` intersection operator; a lone `&` is just a literal member. */
+    private def atIntersectionOp: Boolean = !eof && cur == '&' && pos + 1 < src.length && src.charAt(pos + 1) == '&'
+
+    /**
+     * `[...]`, from the opening `[` through its matching `]` — used both for the top-level
+     * class atom and, recursively, for `[nested]` subclasses on either side of `&&`
+     * (`[a-z&&[^bc]]`). Each side of `&&` is independently negatable.
+     */
+    private def parseClassBody(): CharSet =
       expect('[')
       val negated = !eof && cur == '^'
       if negated then pos += 1
-      @tailrec def loop(acc: Vector[Range]): Vector[Range] =
-        if !eof && cur != ']' then
-          val lo = readClassChar()
-          val hi =
-            if !eof && cur == '-' && pos + 1 < src.length && src.charAt(pos + 1) != ']' then
-              pos += 1
-              readClassChar()
-            else lo
-          if hi < lo then fail(s"invalid character-class range `${lo.toChar}-${hi.toChar}`: end must be >= start")
-          loop(acc :+ Range(lo, hi))
-        else acc
-      val ranges = loop(Vector.empty)
+      val set = parseClassIntersection()
       expect(']')
-      if ranges.isEmpty then fail("empty character class")
-      val set = CharSet.normalize(ranges)
-      val finalSet = if negated then set.complement else set
-      Regex(finalSet)
+      if negated then set.complement else set
 
-    private def readClassChar(): Int =
+    /** intersection = union ('&&' union)* */
+    private def parseClassIntersection(): CharSet =
+      @tailrec def loop(acc: CharSet): CharSet =
+        if atIntersectionOp then
+          pos += 2
+          loop(acc.intersect(parseClassUnion()))
+        else acc
+      loop(parseClassUnion())
+
+    /**
+     * union = (range | shorthandEscape | `[nested]`)*, stopping at `]` or `&&`. A shorthand
+     * class item (`\d`, `\s`, `\w`, ...) contributes to `shorthand` directly and can't start or
+     * end a `-` range, matching Java: `[\d-z]` is digit, '-', and 'z' as three separate members
+     * (the dash just isn't treated as a range operator there), while `[a-\d]` is a syntax error
+     * (no single code point to range up to). Likewise a `-` immediately before `&&` is a
+     * literal trailing dash rather than the start of a range.
+     */
+    private def parseClassUnion(): CharSet =
+      @tailrec def loop(ranges: Vector[Range], extra: CharSet): (Vector[Range], CharSet) =
+        if !eof && cur != ']' && !atIntersectionOp then
+          if cur == '[' then loop(ranges, extra.union(parseClassBody()))
+          else
+            readClassChar() match
+              case Left(set) => loop(ranges, extra.union(set))
+              case Right(lo) =>
+                val hi =
+                  if !eof && cur == '-' && pos + 1 < src.length && src.charAt(pos + 1) != ']' && !atIntersectionOpAt(
+                      pos + 1,
+                    )
+                  then
+                    pos += 1
+                    readClassChar() match
+                      case Left(_) => fail(s"invalid character-class range: shorthand escape can't end a range")
+                      case Right(hi) => hi
+                  else lo
+                if hi < lo then fail(s"invalid character-class range `${lo.toChar}-${hi.toChar}`: end must be >= start")
+                loop(ranges :+ Range(lo, hi), extra)
+        else (ranges, extra)
+      val (ranges, extra) = loop(Vector.empty, CharSet.empty)
+      if ranges.isEmpty && extra.isEmpty then fail("empty character class")
+      // Skips the union (and the second normalizing pass it implies) in the common case where
+      // this operand has no shorthand escape or nested subclass at all.
+      if extra.isEmpty then CharSet.normalize(ranges) else CharSet.normalize(ranges).union(extra)
+
+    private def atIntersectionOpAt(p: Int): Boolean = p < src.length && src.charAt(p) == '&' && p + 1 < src.length &&
+      src.charAt(p + 1) == '&'
+
+    private def readClassChar(): Either[CharSet, Int] =
       if eof then fail("unterminated character class")
       (cur: @switch) match
         case '\\' =>
           pos += 1
-          readEscapedChar(inClass = true).getOrElse:
-            fail("shorthand escapes (\\d, \\s, \\w, ...) are not supported inside character classes")
-        case _ => consume().toInt
+          readEscapedChar(inClass = true)
+        case _ => Right(consume().toInt)
 
     private def parseEscape(): Regex =
       expect('\\')

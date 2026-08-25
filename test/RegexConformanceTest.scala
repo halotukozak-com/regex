@@ -7,9 +7,9 @@ package halotukozak.regex
  * original test code itself.
  *
  * Cases exercising features this engine intentionally doesn't support (POSIX/Unicode property
- * classes, lookaround, backreferences, named groups, in-class `&&` intersection, or a
- * Matcher-style find/replace/split API this engine never had) are `ignore`d with a `TODO`
- * rather than deleted, so the gap stays visible instead of silently disappearing.
+ * classes, lookaround, backreferences, named groups, or a Matcher-style find/replace/split API
+ * this engine never had) are `ignore`d with a `TODO` rather than deleted, so the gap stays
+ * visible instead of silently disappearing.
  */
 class RegexConformanceTest extends munit.FunSuite:
 
@@ -118,11 +118,7 @@ class RegexConformanceTest extends munit.FunSuite:
     assertInvalidSyntax(RegexParser.parse(".{4294967296}"))
   }
 
-  test(
-    ("jdk: in-class intersection `[a&&b]` (droppedClassesWithIntersection)" +
-      " - TODO: not supported; `&&` is currently silently misparsed as literal chars instead of" +
-      " being rejected or computing the intersection").ignore,
-  ) {
+  test("jdk: in-class intersection `[a&&b]` (droppedClassesWithIntersection)") {
     assertEquals(parse("[A-Z&&[A-Z]0-9]"), Regex.range('A', 'Z'))
   }
 
@@ -239,11 +235,7 @@ class RegexConformanceTest extends munit.FunSuite:
     assert(equiv("\\s", "[ \\t\\n\\r\\f\\x{B}]"))
   }
 
-  test(
-    ("dregex: shorthand classes nested inside a character class, e.g. `[\\d]` (testShortcutCharacterClasses)" +
-      " - TODO: not supported; readClassChar rejects \\d/\\s/\\w/... inside `[...]` outright," +
-      " unlike Java which allows and unions them").ignore,
-  ) {
+  test("dregex: shorthand classes nested inside a character class, e.g. `[\\d]` (testShortcutCharacterClasses)") {
     assert(equiv("\\d", "[\\d]"))
   }
 

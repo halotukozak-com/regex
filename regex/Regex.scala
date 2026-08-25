@@ -2,10 +2,40 @@ package halotukozak.regex
 
 import halotukozak.commons.deepRecursive
 
-import scala.annotation.{publicInBinary, tailrec, threadUnsafe}
+import scala.annotation.{publicInBinary, tailrec, threadUnsafe, unused}
 import scala.collection.immutable.SortedSet
-import scala.quoted.{Expr, Quotes, ToExpr, Varargs}
+import scala.quoted.{Expr, FromExpr, Quotes, ToExpr, Varargs}
 import scala.util.hashing.MurmurHash3
+
+/**
+ * The `args` parameter only exists so this satisfies the shape Scala's `StringContext`
+ * interpolation desugaring requires (`sc"..."` lowers to `sc.regex(interpolatedExprs*)`); the
+ * pattern itself is built purely from the string-literal parts, so splices are not supported.
+ *
+ * `sc` must be `inline` too: without it, the compiler binds the extension receiver to a
+ * synthetic proxy val before splicing, so `'sc` inside the macro body no longer refers to the
+ * literal `StringContext(...)` call and `scExpr.value` always sees `None` — silently
+ * degrading every `regex"..."` call to the runtime-parsing fallback instead of validating at
+ * compile time.
+ */
+extension (inline sc: StringContext) inline def regex(@unused args: Any*): Regex = ${ regexInterpolatorImpl('sc) }
+
+private def regexInterpolatorImpl(scExpr: Expr[StringContext])(using quotes: Quotes): Expr[Regex] =
+  import quotes.reflect.*
+  scExpr.value match
+    case Some(sc) =>
+      val pattern = sc.parts.mkString
+      RegexParser.parse(pattern) match
+        case Left(error) =>
+          report.errorAndAbort(s"Regex parse error: $error")
+        case Right(regex) =>
+          Expr(regex)
+    case None =>
+      '{
+        RegexParser.parse(${ scExpr }.parts.mkString) match
+          case Left(error) => throw IllegalArgumentException(s"Regex parse error: $error")
+          case Right(regex) => regex
+      }
 
 /**
  * A symbolic regex algebra with exact language containment ("is this pattern a subset of
@@ -20,9 +50,10 @@ import scala.util.hashing.MurmurHash3
  * generated `unapply` methods is allowed.
  *
  * Supports literals, escapes (\d \D \s \S \w \W \t \n \r \f \a \e \v \cX \0[n[n]] \xhh
- * \x{h...h} \uhhhh \Q...\E \R and meta-escapes), character classes (including ranges and
- * negation), `.`, alternation `|`, non-capturing-style groups `(...)`, quantifiers `*` `+`
- * `?` `{n}` `{n,}` `{n,m}` (bounds capped at [[Regex.maxRepeatBound]]).
+ * \x{h...h} \uhhhh \Q...\E \R and meta-escapes), character classes (including ranges, negation,
+ * nested subclasses, and `&&` intersection), `.`, alternation `|`, non-capturing-style groups
+ * `(...)`, quantifiers `*` `+` `?` `{n}` `{n,}` `{n,m}` (bounds capped at
+ * [[Regex.maxRepeatBound]]).
  *
  * Unsupported (parser returns [[RegexParseError.UnsupportedFeature]]):
  * anchors `^` `$` `\b` `\B` `\A` `\Z` `\z` `\G`, lookaround `(?=` `(?!` `(?<=` `(?<!`,
@@ -91,7 +122,7 @@ enum Regex:
    */
   @threadUnsafe lazy val alphabetBoundaries: SortedSet[Int] = this match
     case Eps | Empty => SortedSet.empty
-    case Chars(set) => SortedSet.from(set.ranges.iterator.flatMap(r => Iterator(r.lo, r.hi + 1)))
+    case Chars(set) => SortedSet.from(set.iterator.flatMap(r => Iterator(r.lo, r.hi + 1)))
     case Concat(a, b) => a.alphabetBoundaries ++ b.alphabetBoundaries
     case Alt(parts) => parts.iterator.map(_.alphabetBoundaries).reduce(_ ++ _)
     case Inter(parts) => parts.iterator.map(_.alphabetBoundaries).reduce(_ ++ _)
@@ -115,7 +146,7 @@ enum Regex:
     case s: Regex.Star => s
     case _ => Regex.Star(this)
 
-  def * = star
+  def * : Regex = star
 
   /** Quantifier `this{n,m}` where m can be `Int.MaxValue` for unbounded. */
   def repeat(lo: Int, hi: Int): Regex =
@@ -228,7 +259,7 @@ object Regex:
  * constructor ([[CharSet.normalize]], [[CharSet.single]], [[CharSet.range]], [[CharSet.empty]],
  * [[CharSet.all]]); `complement` and `intersect` rely on that invariant.
  */
-final class CharSet @publicInBinary private[CharSet] (val ranges: Vector[Range]) extends AnyVal:
+final class CharSet @publicInBinary private[CharSet] (private val ranges: Vector[Range]) extends AnyVal:
 
   def contains(c: Int): Boolean =
     @tailrec
@@ -273,6 +304,8 @@ final class CharSet @publicInBinary private[CharSet] (val ranges: Vector[Range])
         loop(rs.tail, head.hi + 1, acc1)
     loop(ranges, 0, Vector.empty)
 
+  def iterator: Iterator[Range] = ranges.iterator
+
 object CharSet:
 
   /** Upper bound used for complement. Covers all valid Unicode code points. */
@@ -315,7 +348,24 @@ object CharSet:
     def apply(s: CharSet)(using Quotes): Expr[CharSet] =
       val rangeExprs: Seq[Expr[Range]] = s.ranges.map(Expr.apply)
       '{ CharSet(Vector(${ Varargs(rangeExprs) }*)) }
-  // $COVERAGE-ON$
+
+  given FromExpr[CharSet]:
+    private def fromRanges(exprs: Seq[Expr[Range]])(using Quotes) =
+      val ranges = exprs.foldLeft(Option(Vector.empty[Range])):
+        case (Some(acc), Expr(range)) => Some(acc :+ range)
+        case _ => None
+      ranges.map(new CharSet(_))
+
+    override def unapply(s: Expr[CharSet])(using Quotes): Option[CharSet] = s match
+      case '{ CharSet(Vector(${ Varargs(rangeExprs) }*)) } => fromRanges(rangeExprs)
+      case '{ new CharSet(Vector(${ Varargs(rangeExprs) }*)) } => fromRanges(rangeExprs)
+      case '{ CharSet.single(${ Expr(c) }: Char) } => Some(CharSet.single(c))
+      case '{ CharSet.single(${ Expr(c) }: Int) } => Some(CharSet.single(c))
+      case '{ CharSet.range(${ Expr(lo) }: Char, ${ Expr(hi) }: Char) } => Some(CharSet.range(lo, hi))
+      case '{ CharSet.range(${ Expr(lo) }: Int, ${ Expr(hi) }: Int) } => Some(CharSet.range(lo, hi))
+      case _ => None
+
+// $COVERAGE-ON$
 
 /** Single closed code-point range. */
 final case class Range(lo: Int, hi: Int):
@@ -329,6 +379,14 @@ object Range:
   given ToExpr[Range]:
     def apply(x: Range)(using Quotes): Expr[Range] =
       '{ Range(${ Expr(x.lo) }, ${ Expr(x.hi) }) }
+
+  given FromExpr[Range]:
+    override def unapply(x: Expr[Range])(using Quotes): Option[Range] = x match
+      case '{ Range(${ Expr(lo) }: Char, ${ Expr(hi) }: Char) } => Some(Range(lo, hi))
+      case '{ Range(${ Expr(lo) }: Int, ${ Expr(hi) }: Int) } => Some(Range(lo, hi))
+      case '{ new Range(${ Expr(lo) }: Char, ${ Expr(hi) }: Char) } => Some(Range(lo, hi))
+      case '{ new Range(${ Expr(lo) }: Int, ${ Expr(hi) }: Int) } => Some(Range(lo, hi))
+      case _ => None
   // $COVERAGE-ON$
 
 extension [A, CC[X] <: Iterable[X]](xs: scala.collection.IterableOps[A, CC, CC[A]])
