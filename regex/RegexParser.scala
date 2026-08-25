@@ -35,10 +35,10 @@ object RegexParseError:
  * \) \[ \] \{ \} \| \^ \$ \-), `.`, char classes `[...]` `[^...]` with ranges, nested shorthand
  * escapes (`[\da-f]`), nested subclasses, and `&&` intersection (`[a-z&&[^aeiou]]`) (`\b`
  * inside a class means backspace, matching Java), alternation `|`, groups `(...)` (capturing or
- * `(?:...)`, flag groups are NOT supported), quantifiers `*` `+` `?` `{n}` `{n,}` `{n,m}`
- * (bounds capped at [[Regex.maxRepeatBound]]).
+ * `(?:...)`, flag groups are NOT supported), lookahead `(?=...)` `(?!...)`, quantifiers `*` `+`
+ * `?` `{n}` `{n,}` `{n,m}` (bounds capped at [[Regex.maxRepeatBound]]).
  *
- * Unsupported: anchors `^` `$` `\b` `\B` `\A` `\Z` `\z` `\G`, lookaround, backreferences
+ * Unsupported: anchors `^` `$` `\b` `\B` `\A` `\Z` `\z` `\G`, lookbehind, backreferences
  * `\1`..`\9` `\k<name>` `\g{...}`, Unicode properties `\p{...}`, grapheme clusters `\X`,
  * named groups, flag groups. Any other undefined letter escape (e.g. `\m`, `\y`, `\q`) is
  * rejected as invalid syntax, matching `java.util.regex.Pattern`'s own behavior.
@@ -47,6 +47,11 @@ object RegexParser:
 
   private final class InvalidSyntaxSignal(val msg: String, val pos: Int) extends RuntimeException(msg)
   private final class UnsupportedSignal(val feature: String, val pos: Int) extends RuntimeException(feature)
+
+  /** What kind of group `(...)` a header (`?:`, `?=`, `?!`, or none) introduced. */
+  private enum GroupKind:
+    case Plain
+    case Look(positive: Boolean)
 
   private val whitespaceSet: CharSet = CharSet.normalize(
     Range(' ', ' '),
@@ -202,18 +207,29 @@ object RegexParser:
 
     private def parseGroup(): Regex =
       expect('(')
-      if !eof && cur == '?' then
-        pos += 1
-        consumeGroupHeader()
+      val kind =
+        if !eof && cur == '?' then
+          pos += 1
+          consumeGroupHeader()
+        else GroupKind.Plain
       val inner = parseAlt()
       expect(')')
-      inner
+      kind match
+        case GroupKind.Plain => inner
+        case GroupKind.Look(positive) => Regex.lookahead(inner, positive)
 
-    private def consumeGroupHeader(): Unit =
+    private def consumeGroupHeader(): GroupKind =
       if eof then unsupported("incomplete group header")
       (cur: @switch) match
-        case ':' => pos += 1
-        case '=' | '!' => unsupported("lookahead")
+        case ':' =>
+          pos += 1
+          GroupKind.Plain
+        case '=' =>
+          pos += 1
+          GroupKind.Look(positive = true)
+        case '!' =>
+          pos += 1
+          GroupKind.Look(positive = false)
         case '<' =>
           pos += 1
           if !eof && (cur == '=' || cur == '!') then unsupported("lookbehind")

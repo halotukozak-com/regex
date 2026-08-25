@@ -44,6 +44,11 @@ class RegexInterpolatorTest extends munit.FunSuite:
     assertEquals(regex"(a(bc))+", RegexParser.parse("(a(bc))+").toOption.get)
   }
 
+  test("lookahead") {
+    assertEquals(regex"(?=a)a", RegexParser.parse("(?=a)a").toOption.get)
+    assertEquals(regex"(?!a)b", RegexParser.parse("(?!a)b").toOption.get)
+  }
+
   // IntelliJ's Scala plugin (pre-2025.2) misapplies `s`-interpolator escape-cooking rules to
   // custom interpolators taking an `args: Any*` parameter, flagging `\d`/`\Q`/`\x` below as
   // "Invalid escape character" — a known false positive (fixed in the 2025.2 release; update
@@ -74,12 +79,12 @@ class RegexInterpolatorTest extends munit.FunSuite:
   }
 
   test("unsupported feature fails to compile with a descriptive message") {
-    val errors = typeCheckErrors("""_root_.scala.StringContext("(?=foo)").regex()""")
+    val errors = typeCheckErrors("""_root_.scala.StringContext("(?<=foo)").regex()""")
     assertEquals(errors.size, 1)
     assert(
       errors.head.message.contains("Regex parse error") &&
-        errors.head.message.contains("unsupported regex feature `lookahead`") &&
-        errors.head.message.contains("at position 2") && errors.head.message.contains(""""(?=foo)""""),
+        errors.head.message.contains("unsupported regex feature `lookbehind`") &&
+        errors.head.message.contains("at position 3") && errors.head.message.contains(""""(?<=foo)""""),
       s"unexpected message: ${errors.head.message}",
     )
   }

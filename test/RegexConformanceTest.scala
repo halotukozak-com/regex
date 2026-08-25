@@ -7,9 +7,9 @@ package halotukozak.regex
  * original test code itself.
  *
  * Cases exercising features this engine intentionally doesn't support (POSIX/Unicode property
- * classes, lookaround, backreferences, named groups, or a Matcher-style find/replace/split API
+ * classes, lookbehind, backreferences, named groups, or a Matcher-style find/replace/split API
  * this engine never had) are `ignore`d with a `TODO` rather than deleted, so the gap stays
- * visible instead of silently disappearing.
+ * visible instead of silently disappearing. Lookahead is supported, so those cases run for real.
  */
 class RegexConformanceTest extends munit.FunSuite:
 
@@ -254,11 +254,53 @@ class RegexConformanceTest extends munit.FunSuite:
     assertUnsupported(RegexParser.parse("(?<name>abc)"))
   }
 
-  test(
-    ("dregex: lookaround equivalences (testLookaround)" +
-      " - TODO: unsupported, lookaround is rejected at parse time").ignore,
-  ) {
+  test("dregex: lookaround equivalences (testLookaround)") {
     assert(equiv("(?!a|b)(?!c).*", "(?!a|b|c).*"))
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Lookahead matching semantics, cross-checked against java.util.regex.Pattern.matches
+  // ---------------------------------------------------------------------------------------
+
+  test("lookahead: positive assertion gates what follows it") {
+    assert(matches("(?=a)a", "a"))
+    assert(!matches("(?=a)a", "b"))
+    assert(!matches("(?=a)[ab]", "b"))
+    assert(matches("(?=a)[ab]", "a"))
+  }
+
+  test("lookahead: negative assertion excludes what it names") {
+    assert(matches("(?!a)[ab]", "b"))
+    assert(!matches("(?!a)[ab]", "a"))
+    assert(matches("(?!a)b", "b"))
+  }
+
+  test("lookahead: assertion that never consumes doesn't block matching past it") {
+    assert(matches("(?=a)ab", "ab"))
+    assert(!matches("(?=a)ab", "b"))
+  }
+
+  test("lookahead: nullable assertion body makes a positive lookahead trivially true") {
+    assert(matches("(?=a*)b", "b"))
+  }
+
+  test("lookahead: nullable assertion body makes a negative lookahead always fail") {
+    assert(!matches("(?!a*)b", "b"))
+  }
+
+  test("lookahead: chained lookaheads at the head of a concatenation") {
+    assert(matches("(?=a)(?=ab)abc", "abc"))
+    assert(!matches("(?=a)(?=ax)abc", "abc"))
+  }
+
+  test("lookahead: an Alt branch that's a lookahead still contributes zero width") {
+    // the lookahead branch consumes nothing, so only "a" (Look + the trailing literal) and "xa"
+    // (the literal-`x` branch + the trailing literal) are full matches - "aa" isn't, since taking
+    // the Look branch there leaves the second `a` unconsumed
+    assert(matches("((?=a)|x)a", "a"))
+    assert(matches("((?=a)|x)a", "xa"))
+    assert(!matches("((?=a)|x)a", "aa"))
+    assert(!matches("((?=a)|x)a", "ya"))
   }
 
   test(

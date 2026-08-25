@@ -12,8 +12,8 @@ language is a subset of another's. Answering that requires an algebraic represen
 run set operations on, not a black-box matcher.
 
 `regex` builds that representation directly: an ADT of regular-expression combinators
-(concatenation, alternation, intersection, complement, Kleene star, bounded repetition) with
-smart constructors that keep it normalized, plus a
+(concatenation, alternation, intersection, complement, Kleene star, bounded repetition,
+lookahead) with smart constructors that keep it normalized, plus a
 [Brzozowski-derivative](https://en.wikipedia.org/wiki/Brzozowski_derivative)-based `Subset` view
 exposing emptiness, nullability, and subset checks. A hand-written parser accepts a
 Java-`Pattern`-compatible syntax subset (escapes, character classes, quantifiers, `\Q...\E`,
@@ -68,7 +68,7 @@ val hexDigits = digits | Regex.range('a', 'f') | Regex.range('A', 'F')
 
 `RegexParser.parse` returns `Either[RegexParseError, Regex]`, distinguishing malformed syntax
 (`RegexParseError.InvalidSyntax`) from syntax this parser recognizes but doesn't support, like
-lookaround or backreferences (`RegexParseError.UnsupportedFeature`).
+lookbehind or backreferences (`RegexParseError.UnsupportedFeature`).
 
 ### `regex"..."` interpolator
 
@@ -81,7 +81,7 @@ import halotukozak.regex.regex
 
 val idToken = regex"[a-zA-Z_][a-zA-Z0-9_]*" // Regex, built while compiling
 
-val bad = regex"(?=foo)" // doesn't compile: Regex parse error: UnsupportedFeature(...)
+val bad = regex"(?<=foo)" // doesn't compile: Regex parse error: UnsupportedFeature(...)
 ```
 
 If the pattern isn't a literal (e.g. it's assembled into a `StringContext` at runtime), it falls

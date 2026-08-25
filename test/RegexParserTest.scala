@@ -17,11 +17,11 @@ class RegexParserTest extends munit.FunSuite:
     case other => fail(s"expected UnsupportedFeature, got $other")
 
   test("RegexParseError's toString includes the message, position, and pattern") {
-    val err: RegexParseError = RegexParser.parse("(?=foo)").left.getOrElse(fail("expected a parse error"))
+    val err: RegexParseError = RegexParser.parse("(?<=foo)").left.getOrElse(fail("expected a parse error"))
     val text = err.toString
-    assert(text.contains("unsupported regex feature `lookahead`"), text)
-    assert(text.contains("at position 2"), text)
-    assert(text.contains("\"(?=foo)\""), text)
+    assert(text.contains("unsupported regex feature `lookbehind`"), text)
+    assert(text.contains("at position 3"), text)
+    assert(text.contains("\"(?<=foo)\""), text)
   }
 
   test("parses literal string") {
@@ -110,9 +110,21 @@ class RegexParserTest extends munit.FunSuite:
     assertUnsupported(RegexParser.parse("a$"))
   }
 
-  test("rejects lookahead") {
-    assertUnsupported(RegexParser.parse("(?=a)"))
-    assertUnsupported(RegexParser.parse("(?!a)"))
+  test("parses positive lookahead") {
+    assertEquals(parse("(?=a)"), Regex.lookahead(Regex.lit('a'), positive = true))
+  }
+
+  test("parses negative lookahead") {
+    assertEquals(parse("(?!a)"), Regex.lookahead(Regex.lit('a'), positive = false))
+  }
+
+  test("lookahead body follows the normal group grammar") {
+    assertEquals(parse("(?=a|b)"), Regex.lookahead(Regex.lit('a') | Regex.lit('b'), positive = true))
+  }
+
+  test("lookahead composes with what follows it") {
+    val a = Regex.lit('a')
+    assertEquals(parse("(?=a)a"), Regex.lookahead(a, positive = true).concat(a))
   }
 
   test("rejects lookbehind") {

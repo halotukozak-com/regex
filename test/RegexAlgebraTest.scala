@@ -93,6 +93,24 @@ class RegexAlgebraTest extends munit.FunSuite:
     assertEquals(!(!rA), rA)
   }
 
+  // lookahead ---------------------------------------------------------------
+
+  test("lookahead wraps a non-degenerate body") {
+    Regex.lookahead(rA, positive = true) match
+      case Look(r, positive) => assertEquals((r, positive), (rA, true))
+      case other => fail(s"not Look: $other")
+  }
+
+  test("positive lookahead of Empty is Empty; of Eps is Eps") {
+    assertEquals(Regex.lookahead(Empty, positive = true), Empty)
+    assertEquals(Regex.lookahead(Eps, positive = true), Eps)
+  }
+
+  test("negative lookahead of Empty is Eps; of Eps is Empty") {
+    assertEquals(Regex.lookahead(Empty, positive = false), Eps)
+    assertEquals(Regex.lookahead(Eps, positive = false), Empty)
+  }
+
   // literal ---------------------------------------------------------------
 
   test("literal of empty string is Eps") {
