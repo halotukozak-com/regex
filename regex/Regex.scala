@@ -3,7 +3,7 @@ package halotukozak.regex
 import halotukozak.commons.deepRecursive
 
 import scala.annotation.{publicInBinary, tailrec, threadUnsafe, unused}
-import scala.collection.immutable.SortedSet
+import scala.collection.immutable.{ArraySeq, SortedSet}
 import scala.quoted.{Expr, FromExpr, Quotes, ToExpr, Varargs}
 import scala.util.hashing.MurmurHash3
 
@@ -258,8 +258,16 @@ object Regex:
  * [[CharSet]]'s own companion so every instance is still built through a normalizing smart
  * constructor ([[CharSet.normalize]], [[CharSet.single]], [[CharSet.range]], [[CharSet.empty]],
  * [[CharSet.all]]); `complement` and `intersect` rely on that invariant.
+ *
+ * Backed by [[ArraySeq]] rather than `Vector`: this type is immutable once built (every
+ * instance goes through the normalizing smart constructors above, never incremental
+ * append/prepend), so there's nothing to gain from `Vector`'s structural sharing - but
+ * `contains`'s binary search, and `intersect`/`complement`'s indexed loops, benefit from
+ * `ArraySeq`'s true O(1) array-backed indexed access (`Vector`'s is O(log32 n)) while still
+ * getting structural `equals`/`hashCode` for free (unlike a raw `Array`), which `Regex`'s
+ * `Set`-based ACI normalization and cached `hashCode` rely on.
  */
-final class CharSet @publicInBinary private[CharSet] (private val ranges: Vector[Range]) extends AnyVal:
+final class CharSet @publicInBinary private[CharSet] (private val ranges: ArraySeq[Range]) extends AnyVal:
 
   def contains(c: Int): Boolean =
     @tailrec
@@ -289,20 +297,24 @@ final class CharSet @publicInBinary private[CharSet] (private val ranges: Vector
         val hi = math.min(a.hi, b.hi)
         val acc1 = if lo <= hi then acc :+ Range(lo, hi) else acc
         if a.hi < b.hi then loop(i + 1, j, acc1) else loop(i, j + 1, acc1)
-    CharSet(loop(0, 0, Vector.empty))
+    CharSet(ArraySeq.from(loop(0, 0, Vector.empty)))
 
   def &(other: CharSet): CharSet = intersect(other)
 
   def complement: CharSet =
+    // Walks `ranges` by index rather than `.head`/`.tail`: unlike `Vector`, slicing off the
+    // head of an array-backed `ArraySeq` is O(n) (a fresh array copy), which would make this
+    // loop O(n^2) overall instead of O(n).
     @tailrec
-    def loop(rs: Vector[Range], prev: Int, acc: Vector[Range]): CharSet =
-      if rs.isEmpty then
-        if prev <= CharSet.maxCodePoint then CharSet(acc :+ Range(prev, CharSet.maxCodePoint)) else CharSet(acc)
+    def loop(idx: Int, prev: Int, acc: Vector[Range]): CharSet =
+      if idx >= ranges.length then
+        if prev <= CharSet.maxCodePoint then CharSet(ArraySeq.from(acc :+ Range(prev, CharSet.maxCodePoint)))
+        else CharSet(ArraySeq.from(acc))
       else
-        val head = rs.head
+        val head = ranges(idx)
         val acc1 = if prev <= head.lo - 1 then acc :+ Range(prev, head.lo - 1) else acc
-        loop(rs.tail, head.hi + 1, acc1)
-    loop(ranges, 0, Vector.empty)
+        loop(idx + 1, head.hi + 1, acc1)
+    loop(0, 0, Vector.empty)
 
   def iterator: Iterator[Range] = ranges.iterator
 
@@ -311,8 +323,8 @@ object CharSet:
   /** Upper bound used for complement. Covers all valid Unicode code points. */
   val maxCodePoint: Int = 0x10ffff
 
-  val empty: CharSet = CharSet(Vector.empty)
-  val all: CharSet = CharSet(Vector(Range(0, maxCodePoint)))
+  val empty: CharSet = CharSet(ArraySeq.empty)
+  val all: CharSet = CharSet(ArraySeq(Range(0, maxCodePoint)))
 
   /** What `.` matches in Java regex without DOTALL flag — all code points except line terminators. */
   val dotDefault: CharSet = normalize(
@@ -324,9 +336,9 @@ object CharSet:
   )
 
   def single(c: Char): CharSet = single(c.toInt)
-  def single(c: Int): CharSet = CharSet(Vector(Range(c, c)))
+  def single(c: Int): CharSet = CharSet(ArraySeq(Range(c, c)))
   def range(lo: Char, hi: Char): CharSet = range(lo.toInt, hi.toInt)
-  def range(lo: Int, hi: Int): CharSet = CharSet(Vector(Range(lo, hi)))
+  def range(lo: Int, hi: Int): CharSet = CharSet(ArraySeq(Range(lo, hi)))
 
   /** Builds a normalized [[CharSet]] from arbitrary (possibly overlapping) ranges. */
   def normalize(rs: Iterable[Range]): CharSet =
@@ -337,9 +349,9 @@ object CharSet:
         case ((acc, cur: Range), r) =>
           if r.lo <= cur.hi + 1 then (acc, Range(cur.lo, math.max(cur.hi, r.hi)))
           else (acc :+ cur, r)
-    CharSet(last match
+    CharSet(ArraySeq.from(last match
       case null => acc
-      case r => acc :+ r)
+      case r => acc :+ r))
 
   def normalize(ranges: Range*): CharSet = normalize(ranges)
 
@@ -347,18 +359,18 @@ object CharSet:
   given ToExpr[CharSet]:
     def apply(s: CharSet)(using Quotes): Expr[CharSet] =
       val rangeExprs: Seq[Expr[Range]] = s.ranges.map(Expr.apply)
-      '{ CharSet(Vector(${ Varargs(rangeExprs) }*)) }
+      '{ CharSet(ArraySeq(${ Varargs(rangeExprs) }*)) }
 
   given FromExpr[CharSet]:
     private def fromRanges(exprs: Seq[Expr[Range]])(using Quotes) =
       val ranges = exprs.foldLeft(Option(Vector.empty[Range])):
         case (Some(acc), Expr(range)) => Some(acc :+ range)
         case _ => None
-      ranges.map(new CharSet(_))
+      ranges.map(rs => new CharSet(ArraySeq.from(rs)))
 
     override def unapply(s: Expr[CharSet])(using Quotes): Option[CharSet] = s match
-      case '{ CharSet(Vector(${ Varargs(rangeExprs) }*)) } => fromRanges(rangeExprs)
-      case '{ new CharSet(Vector(${ Varargs(rangeExprs) }*)) } => fromRanges(rangeExprs)
+      case '{ CharSet(ArraySeq(${ Varargs(rangeExprs) }*)) } => fromRanges(rangeExprs)
+      case '{ new CharSet(ArraySeq(${ Varargs(rangeExprs) }*)) } => fromRanges(rangeExprs)
       case '{ CharSet.single(${ Expr(c) }: Char) } => Some(CharSet.single(c))
       case '{ CharSet.single(${ Expr(c) }: Int) } => Some(CharSet.single(c))
       case '{ CharSet.range(${ Expr(lo) }: Char, ${ Expr(hi) }: Char) } => Some(CharSet.range(lo, hi))
