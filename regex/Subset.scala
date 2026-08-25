@@ -4,6 +4,7 @@ import halotukozak.regex.Regex.*
 
 import scala.annotation.tailrec
 import scala.collection.immutable.{Queue, SortedSet}
+import scala.quoted.{Expr, Quotes, ToExpr}
 import scala.util.control.TailCalls.{done, tailcall, TailRec}
 
 /**
@@ -117,3 +118,8 @@ object Subset:
    */
   private def partitionReps(r: Regex): Array[Int] =
     (SortedSet(0, CharSet.maxCodePoint + 1) ++ r.alphabetBoundaries).init.toArray
+
+  // $COVERAGE-OFF$
+  given ToExpr[Subset]:
+    def apply(s: Subset)(using Quotes): Expr[Subset] = '{ Subset.of(${ Expr(s.underlying) }) }
+  // $COVERAGE-ON$

@@ -1,43 +1,138 @@
 package halotukozak.regex
 
+import scala.annotation.{publicInBinary, tailrec}
+import scala.collection.immutable.{Queue, SortedSet}
+import scala.quoted.{Expr, Quotes, ToExpr}
+
 /**
  * Lexer-style longest-match tokenizer over a priority-ordered list of patterns.
  *
- * Simulates a tagged Brzozowski-derivative DFA in parallel for all patterns. Returns
- * the longest prefix match across all patterns; ties broken by lowest priority index
- * (i.e., the first pattern in the input list wins).
+ * Backed by a DFA obtained via Brzozowski-derivative subset construction over all patterns
+ * in parallel (a single automaton, not one-per-pattern): building it walks the derivative
+ * state space once (`fromRegexes`/`fromSubsets`), so `matchAt` itself is just array lookups -
+ * a binary search to classify the current code point into an alphabet partition, then an
+ * `Int` transition-table read - with no `Regex`/`Subset` allocation or derivation on the hot
+ * path. Ties broken by lowest priority index (i.e., the first pattern in the input list wins).
+ *
+ * `boundaries(i)` is the first code point of partition `i` (`boundaries(0) == 0`); the
+ * partition itself spans `[boundaries(i), boundaries(i + 1))`, with `boundaries.length` acting
+ * as the exclusive upper partition for the last one. All derivative states share this same
+ * partition: deriving only ever discards `Chars` leaves (via smart-constructor normalization),
+ * never introduces new ones, so the alphabet fixed at the initial patterns already bounds
+ * every reachable state.
+ *
+ * `transitions` is `numStates * boundaries.length` entries, row-major by state; `-1` marks the
+ * (unrepresented) dead state, i.e. every pattern's derivative going empty.
+ *
+ * `accept(state)` is the lowest pattern index nullable in that state, or `-1` if none is.
+ *
+ * Constructor kept private - the only places that ever build one are `compile` and `fromDfa`
+ * below, both in the companion object. External code (including macro-spliced trees) goes
+ * through the public `fromDfa` factory instead - see the note on `ToExpr[TokenMatcher]`.
  */
-opaque type TokenMatcher = Vector[Subset]
+final class TokenMatcher @publicInBinary private (
+  private val boundaries: Array[Int],
+  private val transitions: Array[Int],
+  private val accept: Array[Int],
+):
+  private def numPartitions: Int = boundaries.length
+
+  /**
+   * Match a token starting at `start` in `input`.
+   *
+   * @return `Some((priority, end))` where `priority` is the index of the winning
+   *         pattern and `end` is the exclusive end of the longest match. `None` if
+   *         no pattern matches any (possibly empty) prefix at `start`.
+   */
+  def matchAt(input: CharSequence, start: Int): Option[(priority: Int, end: Int)] =
+    @tailrec
+    def loop(state: Int, pos: Int, bestPriority: Int, bestEnd: Int): Option[(priority: Int, end: Int)] =
+      if pos >= input.length then endResult(bestPriority, bestEnd)
+      else
+        val c = Character.codePointAt(input, pos)
+        val next = transitions(state * numPartitions + TokenMatcher.partitionIndex(boundaries, c))
+        if next < 0 then endResult(bestPriority, bestEnd)
+        else
+          val nextPos = pos + Character.charCount(c)
+          accept(next) match
+            case acc if acc >= 0 => loop(next, nextPos, acc, nextPos)
+            case _ => loop(next, nextPos, bestPriority, bestEnd)
+    def endResult(priority: Int, end: Int) = if end >= 0 then Some((priority = priority, end = end)) else None
+    val initialAccept = accept(0)
+    loop(0, start, initialAccept, if initialAccept >= 0 then start else -1)
+
+  /** First position `>= from` at which some pattern matches a non-empty prefix. */
+  def findFirst(input: CharSequence, from: Int): Option[(start: Int, priority: Int, end: Int)] =
+    TokenMatcher
+      .codePointStarts(input, from)
+      .map(start => (start, matchAt(input, start)))
+      .collectFirst:
+        case (start, Some((priority, end))) if end > start => (start, priority, end)
 
 object TokenMatcher:
 
   /** Build a matcher from pre-parsed regexes (use this from macros after compile-time parsing). */
-  def fromRegexes(initial: Regex*): TokenMatcher = initial.iterator.map(Subset.of).toVector
+  def fromRegexes(initial: Regex*): TokenMatcher = fromSubsets(initial.map(Subset.of)*)
 
-  extension (m: TokenMatcher)
+  /** Build a matcher from pre-parsed subsets (use this from macros after compile-time parsing). */
+  def fromSubsets(initial: Subset*): TokenMatcher = compile(initial)
+
+  private def compile(patterns: Seq[Subset]): TokenMatcher =
+    val boundaries = SortedSet(0, CharSet.maxCodePoint + 1)
+      .concat(patterns.iterator.flatMap(_.underlying.alphabetBoundaries))
+      .init
+      .toArray
+
+    def isDead(state: Seq[Subset]): Boolean = state.forall(_ == Subset.empty)
 
     /**
-     * Match a token starting at `start` in `input`.
-     *
-     * @return `Some((priority, end))` where `priority` is the index of the winning
-     *         pattern and `end` is the exclusive end of the longest match. `None` if
-     *         no pattern matches any (possibly empty) prefix at `start`.
+     * Derives `state` across every alphabet partition, assigning a fresh id (via `ids`) to any
+     * not-yet-seen resulting state. `discovered` lists those newly-seen states, in partition
+     * order, for the caller to enqueue for later exploration.
      */
-    def matchAt(input: CharSequence, start: Int): Option[(priority: Int, end: Int)] =
-      codePointStarts(input, start)
-        .map(p => (Character.codePointAt(input, p), p))
-        .scanLeft((m, start)):
-          case ((st, _), (c, p)) => (st.map(_.derive(c)), p + Character.charCount(c))
-        .takeWhile((st, _) => !st.allEmpty)
-        .flatMap((st, p) => st.firstNullable.map(idx => (priority = idx, end = p)))
-        .foldLeft(Option.empty[(priority: Int, end: Int)])((_, hit) => Some(hit))
+    def deriveRow(
+      state: Seq[Subset],
+      ids: Map[Seq[Subset], Int],
+    ): (row: Vector[Int], ids: Map[Seq[Subset], Int], discovered: List[Seq[Subset]]) =
+      boundaries.indices.foldLeft((row = Vector.empty[Int], ids = ids, discovered = List.empty[Seq[Subset]])):
+        case ((row, ids, discovered), i) =>
+          val next = state.map(_.derive(boundaries(i)))
+          if isDead(next) then (row = row :+ -1, ids = ids, discovered = discovered)
+          else
+            ids.get(next) match
+              case Some(id) => (row = row :+ id, ids = ids, discovered = discovered)
+              case None =>
+                val id = ids.size
+                (row = row :+ id, ids = ids.updated(next, id), discovered = discovered :+ next)
 
-    /** First position `>= from` at which some pattern matches a non-empty prefix. */
-    def findFirst(input: CharSequence, from: Int): Option[(start: Int, priority: Int, end: Int)] =
-      codePointStarts(input, from)
-        .map(start => (start, m.matchAt(input, start)))
-        .collectFirst:
-          case (start, Some((priority, end))) if end > start => (start, priority, end)
+    @tailrec
+    def loop(
+      queue: Queue[Seq[Subset]],
+      ids: Map[Seq[Subset], Int],
+      transitions: Vector[Int],
+      accept: Vector[Int],
+    ): (transitions: Array[Int], accept: Array[Int]) =
+      queue.dequeueOption match
+        case None => (transitions = transitions.toArray, accept = accept.toArray)
+        case Some((state, rest)) =>
+          val (row, newIds, discovered) = deriveRow(state, ids)
+          loop(rest.enqueueAll(discovered), newIds, transitions ++ row, accept :+ firstNullable(state))
+
+    val (transitions, accept) = loop(Queue(patterns), Map(patterns -> 0), Vector.empty, Vector.empty)
+    new TokenMatcher(boundaries, transitions, accept)
+
+  private def firstNullable(state: Seq[Subset]): Int =
+    state.iterator.zipWithIndex.collectFirst { case (sub, idx) if sub.nullable => idx }.getOrElse(-1)
+
+  /** Largest `i` with `boundaries(i) <= c`; well-defined since `boundaries(0) == 0 <= c` always. */
+  private def partitionIndex(boundaries: Array[Int], c: Int): Int =
+    @tailrec
+    def loop(lo: Int, hi: Int): Int =
+      if lo == hi then lo
+      else
+        val mid = (lo + hi + 1) >>> 1
+        if boundaries(mid) <= c then loop(mid, hi) else loop(lo, mid - 1)
+    loop(0, boundaries.length - 1)
 
   /** Iterator of code-point start offsets in `input`, beginning at `from`. */
   private def codePointStarts(input: CharSequence, from: Int): Iterator[Int] =
@@ -45,8 +140,9 @@ object TokenMatcher:
       .iterate(from)(p => p + Character.charCount(Character.codePointAt(input, p)))
       .takeWhile(_ < input.length)
 
-  extension (s: Vector[Subset])
-    private def firstNullable: Option[Int] = s.iterator.zipWithIndex.collectFirst:
-      case (sub, idx) if sub.nullable => idx
-
-    private def allEmpty: Boolean = s.forall(_ == Subset.empty)
+  // $COVERAGE-OFF$
+  /** Embeds the already-built DFA table as `Array[Int]` literals - no `Regex`/`Subset` involved. */
+  given ToExpr[TokenMatcher]:
+    def apply(m: TokenMatcher)(using Quotes): Expr[TokenMatcher] =
+      '{ TokenMatcher(${ Expr(m.boundaries) }, ${ Expr(m.transitions) }, ${ Expr(m.accept) }) }
+  // $COVERAGE-ON$
