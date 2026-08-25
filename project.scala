@@ -1,5 +1,6 @@
 //> using scala 3.9.0-RC6
 
+//> using dep com.halotukozak::commons::0.1.1
 //> using test.dep org.scalameta::munit::1.3.5
 
 //> using options -deprecation -feature -new-syntax -unchecked

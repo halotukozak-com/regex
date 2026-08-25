@@ -1,9 +1,10 @@
 package halotukozak.regex
 
+import halotukozak.commons.deepRecursive
+
 import scala.annotation.{publicInBinary, tailrec, threadUnsafe, unused}
 import scala.collection.immutable.SortedSet
 import scala.quoted.{Expr, FromExpr, Quotes, ToExpr, Varargs}
-import scala.util.control.TailCalls.{done, tailcall, TailRec}
 import scala.util.hashing.MurmurHash3
 
 /**
@@ -128,16 +129,6 @@ enum Regex:
     case Star(inner) => inner.alphabetBoundaries
     case Compl(inner) => inner.alphabetBoundaries
 
-  /** Concatenation: `this · other`. */
-  infix def concat(other: Regex): Regex =
-    def loop(a: Regex, b: Regex): TailRec[Regex] = (a, b) match
-      case (Empty, _) | (_, Empty) => done(Empty)
-      case (Eps, x) => done(x)
-      case (x, Eps) => done(x)
-      case (Concat(x, y), z) => tailcall(loop(y, z)).map(Concat(x, _))
-      case _ => done(Concat(a, b))
-    loop(this, other).result
-
   /** Alternation: `this | other`. */
   infix def |(other: Regex): Regex = Regex.alt(Set(this, other))
 
@@ -169,6 +160,15 @@ enum Regex:
     else mandatory.concat((1 to (hi - lo)).foldLeft[Regex](Regex.Eps)((acc, _) => Regex.Eps | this.concat(acc)))
 
 object Regex:
+
+  extension (a: Regex)
+    infix def concat(b: Regex): Regex = deepRecursive:
+      (a, b) match
+        case (Empty, _) | (_, Empty) => Empty
+        case (Eps, x) => x
+        case (x, Eps) => x
+        case (Concat(x, y), z) => Concat(x, y.concat(z))
+        case _ => Concat(a, b)
 
   /**
    * Upper bound on quantifier bounds accepted by [[repeat]]. `{n,m}` is unfolded into an
