@@ -6,9 +6,9 @@ import java.util.concurrent.TimeUnit
 import scala.compiletime.uninitialized
 
 /**
- * `CharSet.contains` currently does a linear scan over sorted, non-overlapping ranges — a
- * candidate for a binary search. `rangeCount` lets that (and the other set operations) be
- * measured across input sizes instead of at one fixed point.
+ * `CharSet.contains` does a binary search over sorted, non-overlapping ranges, backed by an
+ * array-based `ArraySeq` for true O(1) indexed access. `rangeCount` lets that (and the other
+ * set operations) be measured across input sizes instead of at one fixed point.
  *
  * Run: `scala-cli run --jmh . -- CharSetBenchmark` (see `bench/README.md`).
  */
