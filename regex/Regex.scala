@@ -1,9 +1,10 @@
 package halotukozak.regex
 
+import halotukozak.commons.deepRecursive
+
 import scala.annotation.{publicInBinary, tailrec, threadUnsafe}
 import scala.collection.immutable.SortedSet
 import scala.quoted.{Expr, Quotes, ToExpr, Varargs}
-import scala.util.control.TailCalls.{done, tailcall, TailRec}
 import scala.util.hashing.MurmurHash3
 
 /**
@@ -97,24 +98,6 @@ enum Regex:
     case Star(inner) => inner.alphabetBoundaries
     case Compl(inner) => inner.alphabetBoundaries
 
-  /**
-   * Not `deepRecursive`: the recursive step needs to advance to `y` (`y.concat(z)`), a
-   * receiver different from `this` - `deepRecursive` only threads explicit arguments through
-   * its trampoline, so a self-call reached via a different receiver's `Select` (as opposed to
-   * an extension method's receiver, which compiles to an ordinary curried argument) would have
-   * that receiver silently dropped, leaving the trampoline stuck recursing against the original
-   * `this` forever. Hand-rolled `TailCalls` trampolining sidesteps that by threading both sides
-   * of the concatenation explicitly.
-   */
-  infix def concat(other: Regex): Regex =
-    def loop(a: Regex, b: Regex): TailRec[Regex] = (a, b) match
-      case (Empty, _) | (_, Empty) => done(Empty)
-      case (Eps, x) => done(x)
-      case (x, Eps) => done(x)
-      case (Concat(x, y), z) => tailcall(loop(y, z)).map(Concat(x, _))
-      case _ => done(Concat(a, b))
-    loop(this, other).result
-
   /** Alternation: `this | other`. */
   infix def |(other: Regex): Regex = Regex.alt(Set(this, other))
 
@@ -146,6 +129,15 @@ enum Regex:
     else mandatory.concat((1 to (hi - lo)).foldLeft[Regex](Regex.Eps)((acc, _) => Regex.Eps | this.concat(acc)))
 
 object Regex:
+
+  extension (a: Regex)
+    infix def concat(b: Regex): Regex = deepRecursive:
+      (a, b) match
+        case (Empty, _) | (_, Empty) => Empty
+        case (Eps, x) => x
+        case (x, Eps) => x
+        case (Concat(x, y), z) => Concat(x, y.concat(z))
+        case _ => Concat(a, b)
 
   /**
    * Upper bound on quantifier bounds accepted by [[repeat]]. `{n,m}` is unfolded into an
