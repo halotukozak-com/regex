@@ -2,7 +2,8 @@
 
 JMH microbenchmarks for the hot paths of this library: `Regex` construction (`alt`/`concat`/
 `repeat`, which drive `Set`-based ACI normalization and `hashCode`), the Brzozowski-derivative
-machinery in `Subset` (`subset`/`isEmpty`/`derive`), and `CharSet.contains`.
+machinery in `Subset` (`subset`/`isEmpty`/`derive`), `CharSet.contains`, and the compiled
+`TokenMatcher` DFA (`matchAt`/`findFirst`/`compile`).
 
 This directory only compiles under `--jmh` — it's excluded (`--exclude "bench/**"`) from every
 other `scala-cli` invocation (`compile`, `test`, `doc`, `publish`) because `@Benchmark` needs
