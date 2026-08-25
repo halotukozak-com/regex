@@ -283,7 +283,38 @@ final class CharSet @publicInBinary private[CharSet] (private val ranges: ArrayS
 
   def isEmpty: Boolean = ranges.isEmpty
 
-  infix def union(other: CharSet): CharSet = CharSet.normalize(ranges ++ other.ranges)
+  /**
+   * Two-pointer merge of the two already-sorted, already-coalesced range sequences, O(n+m) -
+   * as opposed to flattening both into one list and re-sorting from scratch (what
+   * `CharSet.normalize(ranges ++ other.ranges)` used to do here, at O((n+m) log(n+m))), which
+   * throws away the fact that both inputs are already ordered. Mirrors `intersect`'s existing
+   * two-pointer walk, just coalescing overlapping/adjacent ranges (`normalize`'s rule) instead
+   * of intersecting them.
+   *
+   * Writes straight into an `ArraySeq.newBuilder`, unlike `intersect`/`complement`/`normalize`
+   * which accumulate into a `Vector` and convert via `ArraySeq.from` at the end - skips both
+   * the `Vector` node allocations and that final copy.
+   */
+  infix def union(other: CharSet): CharSet =
+    val builder = ArraySeq.newBuilder[Range]
+    builder.sizeHint(ranges.length + other.ranges.length)
+    var i = 0
+    var j = 0
+    var cur: Range | Null = null
+    while i < ranges.length || j < other.ranges.length do
+      val takeFromA = j >= other.ranges.length || (i < ranges.length && ranges(i).lo <= other.ranges(j).lo)
+      val next = if takeFromA then ranges(i) else other.ranges(j)
+      if takeFromA then i += 1 else j += 1
+      cur match
+        case null => cur = next
+        case c if next.lo <= c.hi + 1 => cur = Range(c.lo, math.max(c.hi, next.hi))
+        case c =>
+          builder += c
+          cur = next
+    cur match
+      case null => ()
+      case c => builder += c
+    CharSet(builder.result())
   def |(other: CharSet): CharSet = union(other)
 
   infix def intersect(other: CharSet): CharSet =

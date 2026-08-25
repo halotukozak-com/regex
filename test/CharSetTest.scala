@@ -106,6 +106,39 @@ class CharSetTest extends munit.FunSuite:
     assertEquals(CharSet.empty.union(a), a)
   }
 
+  test("union interleaves multi-range operands without merging when disjoint") {
+    val a = CharSet.normalize(Range(0, 2), Range(10, 12), Range(20, 22))
+    val b = CharSet.normalize(Range(5, 7), Range(15, 17), Range(25, 27))
+    val expected = Vector(Range(0, 2), Range(5, 7), Range(10, 12), Range(15, 17), Range(20, 22), Range(25, 27))
+    assertEquals(a.union(b).iterator.toVector, expected)
+    assertEquals(b.union(a).iterator.toVector, expected)
+  }
+
+  test("union merges a bridging range from the other operand across a gap") {
+    // b's single range overlaps both of a's ranges and the gap between them, so all three
+    // must coalesce into one - a two-pointer merge that only ever compares current heads
+    // (rather than re-sorting the flattened input) has to keep extending the same run.
+    val a = CharSet.normalize(Range(0, 2), Range(10, 12))
+    val b = CharSet.normalize(Range(1, 11))
+    assertEquals(a.union(b).iterator.toVector, Vector(Range(0, 12)))
+    assertEquals(b.union(a).iterator.toVector, Vector(Range(0, 12)))
+  }
+
+  test("union merges a range from the other operand that exactly fills the gap") {
+    val a = CharSet.normalize(Range(0, 2), Range(10, 12))
+    val b = CharSet.normalize(Range(3, 9))
+    assertEquals(a.union(b).iterator.toVector, Vector(Range(0, 12)))
+    assertEquals(b.union(a).iterator.toVector, Vector(Range(0, 12)))
+  }
+
+  test("union of multi-range operands with a mix of merges and gaps") {
+    val a = CharSet.normalize(Range(0, 2), Range(10, 12), Range(30, 32))
+    val b = CharSet.normalize(Range(1, 11), Range(20, 22))
+    val expected = Vector(Range(0, 12), Range(20, 22), Range(30, 32))
+    assertEquals(a.union(b).iterator.toVector, expected)
+    assertEquals(b.union(a).iterator.toVector, expected)
+  }
+
   test("intersect is commutative") {
     val a = CharSet.range('a', 'm')
     val b = CharSet.range('h', 'z')
