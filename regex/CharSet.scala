@@ -16,7 +16,6 @@ import scala.util.boundary.*
  * (`contains`'s binary search, `intersect`/`complement`'s indexed loops) and structural
  * `equals`/`hashCode` (which `Regex`'s `Set`-based ACI normalization and cached `hashCode`
  * rely on) come along for free from the underlying representation.
- 
  */
 opaque type CharSet = ArraySeq[Range]
 
