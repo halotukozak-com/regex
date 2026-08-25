@@ -2,7 +2,9 @@ package halotukozak.regex
 
 import scala.annotation.tailrec
 import scala.collection.immutable.ArraySeq
-import scala.quoted.{Expr, FromExpr, Quotes, ToExpr, Varargs}
+import scala.quoted.*
+import scala.util.boundary
+import scala.util.boundary.*
 
 /**
  * Sorted, non-overlapping, merged ranges over Int code points.
@@ -46,11 +48,46 @@ object CharSet:
 
     def isEmpty: Boolean = cs.isEmpty
 
-    infix def union(other: CharSet): CharSet = CharSet.unionImpl(cs, other)
-    def |(other: CharSet): CharSet = CharSet.unionImpl(cs, other)
+    infix def union(other: CharSet): CharSet =
+      val builder = ArraySeq.newBuilder[Range]
+      builder.sizeHint(cs.length + other.length)
+      var i = 0
+      var j = 0
+      var cur: Range | Null = null
+      while i < cs.length || j < other.length do
+        val takeFromA = j >= other.length || (i < cs.length && cs(i).lo <= other(j).lo)
+        val next = if takeFromA then cs(i) else other(j)
+        if takeFromA then i += 1 else j += 1
+        cur match
+          case null => cur = next
+          case c if next.lo <= c.hi + 1 => cur = Range(c.lo, math.max(c.hi, next.hi))
+          case c =>
+            builder += c
+            cur = next
+      cur match
+        case null => ()
+        case c => builder += c
+      of(builder.result())
+    def |(other: CharSet): CharSet = cs.union(other)
 
-    infix def intersect(other: CharSet): CharSet = CharSet.intersectImpl(cs, other)
-    def &(other: CharSet): CharSet = CharSet.intersectImpl(cs, other)
+    infix def intersect(other: CharSet): CharSet =
+      // No sizeHint here (unlike union/normalize): the actual intersection is very often much
+      // smaller than min(a.length, b.length) - e.g. near-empty for disjoint or
+      // barely-overlapping sets, a common case (`[a-z] & [A-Z]`) - so hinting that upper bound
+      // pre-allocates array capacity that's usually mostly wasted, which benchmarked as a net
+      // loss versus just letting the builder grow on demand.
+      val builder = ArraySeq.newBuilder[Range]
+      var i = 0
+      var j = 0
+      while i < cs.length && j < other.length do
+        val x = cs(i)
+        val y = other(j)
+        val lo = math.max(x.lo, y.lo)
+        val hi = math.min(x.hi, y.hi)
+        if lo <= hi then builder += Range(lo, hi)
+        if x.hi < y.hi then i += 1 else j += 1
+      of(builder.result())
+    def &(other: CharSet): CharSet = intersect(other)
 
     def complement: CharSet =
       // Walks `cs` by index rather than `.head`/`.tail`: unlike `Vector`, slicing off the
@@ -68,53 +105,6 @@ object CharSet:
       of(builder.result())
 
     def iterator: Iterator[Range] = cs.iterator
-
-  /**
-   * Two-pointer merge of the two already-sorted, already-coalesced range sequences, O(n+m) -
-   * as opposed to flattening both into one list and re-sorting from scratch, which throws away
-   * the fact both inputs are already ordered. A plain function (not an extension method named
-   * `union`) so `extension (cs: CharSet).union`'s definition doesn't call itself through the
-   * same name-collision hazard `CharSet`'s own doc comment describes.
-   */
-  private def unionImpl(a: ArraySeq[Range], b: ArraySeq[Range]): CharSet =
-    val builder = ArraySeq.newBuilder[Range]
-    builder.sizeHint(a.length + b.length)
-    var i = 0
-    var j = 0
-    var cur: Range | Null = null
-    while i < a.length || j < b.length do
-      val takeFromA = j >= b.length || (i < a.length && a(i).lo <= b(j).lo)
-      val next = if takeFromA then a(i) else b(j)
-      if takeFromA then i += 1 else j += 1
-      cur match
-        case null => cur = next
-        case c if next.lo <= c.hi + 1 => cur = Range(c.lo, math.max(c.hi, next.hi))
-        case c =>
-          builder += c
-          cur = next
-    cur match
-      case null => ()
-      case c => builder += c
-    of(builder.result())
-
-  /** Same two-pointer shape as `unionImpl`, intersecting overlapping ranges instead. */
-  private def intersectImpl(a: ArraySeq[Range], b: ArraySeq[Range]): CharSet =
-    // No sizeHint here (unlike union/normalize): the actual intersection is very often much
-    // smaller than min(a.length, b.length) - e.g. near-empty for disjoint or
-    // barely-overlapping sets, a common case (`[a-z] & [A-Z]`) - so hinting that upper bound
-    // pre-allocates array capacity that's usually mostly wasted, which benchmarked as a net
-    // loss versus just letting the builder grow on demand.
-    val builder = ArraySeq.newBuilder[Range]
-    var i = 0
-    var j = 0
-    while i < a.length && j < b.length do
-      val x = a(i)
-      val y = b(j)
-      val lo = math.max(x.lo, y.lo)
-      val hi = math.min(x.hi, y.hi)
-      if lo <= hi then builder += Range(lo, hi)
-      if x.hi < y.hi then i += 1 else j += 1
-    of(builder.result())
 
   /** Upper bound used for complement. Covers all valid Unicode code points. */
   val maxCodePoint: Int = 0x10ffff
@@ -167,16 +157,13 @@ object CharSet:
       '{ CharSet.of(ArraySeq(${ Varargs(rangeExprs) }*)) }
 
   given FromExpr[CharSet]:
-    private def fromRanges(exprs: Seq[Expr[Range]])(using Quotes): Option[CharSet] =
-      val builder = ArraySeq.newBuilder[Range]
-      builder.sizeHint(exprs.length)
-      val it = exprs.iterator
-      var ok = true
-      while ok && it.hasNext do
-        it.next() match
-          case Expr(range) => builder += range
-          case _ => ok = false
-      if ok then Some(CharSet.of(builder.result())) else None
+    private def fromRanges(exprs: Seq[Expr[Range]])(using Quotes): Option[CharSet] = boundary:
+      Some:
+        exprs.iterator
+          .map:
+            case Expr(range) => range
+            case _ => break(None)
+          .to(ArraySeq)
 
     override def unapply(s: Expr[CharSet])(using Quotes): Option[CharSet] = s match
       case '{ CharSet.of(ArraySeq(${ Varargs(rangeExprs) }*)) } => fromRanges(rangeExprs)
