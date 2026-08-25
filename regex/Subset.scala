@@ -1,6 +1,6 @@
 package halotukozak.regex
 
-import halotukozak.commons.deepRecursiveMemoized
+import halotukozak.commons.deepRecursive
 import halotukozak.regex.Regex.{Empty, Eps, *}
 
 import scala.annotation.tailrec
@@ -60,13 +60,14 @@ object Subset:
     def nullable: Boolean = a.nullable
 
     /** Brzozowski derivative of `a` with respect to code point `c`. */
-    def derive(c: Int): Subset = deepRecursiveMemoized:
+    def derive(c: Int): Subset = deepRecursive:
       a match
         case Eps | Empty => Empty
         case Chars(set) => if set.contains(c) then Eps else Empty
         case Concat(a, b) =>
-          if a.nullable then a.derive(c).concat(b) | b.derive(c)
-          else a.derive(c).concat(b)
+          val acb = a.derive(c).concat(b)
+          if a.nullable then acb | b.derive(c)
+          else acb
         case Alt(parts) => Regex.alt(deriveAll(parts.toList, c, Nil))
         case Inter(parts) => Regex.inter(deriveAll(parts.toList, c, Nil))
         case s @ Star(inner) => inner.derive(c).concat(s)
