@@ -180,3 +180,35 @@ class SubsetTest extends munit.FunSuite:
     assertEquals(s("abc").underlying, Regex.literal("abc"))
     assertEquals(Subset.of(Eps).underlying, Eps)
   }
+
+  // isEmptyBounded / subsetBounded -----------------------------------------
+
+  // Neither operand is a bare `Chars` node, so the smart constructors can't collapse this to
+  // `Empty` at construction time (same reasoning as `disjointIntersection` in
+  // `SubsetBenchmark`) - `isEmpty`'s BFS genuinely has to walk derivative states across the
+  // whole `[a-z]*` middle section before concluding the language is empty, so it's a case that
+  // needs more than a couple of visited states to decide either way.
+  private lazy val disjointIntersection = s(s("a[a-z]*b").underlying & s("a[a-z]*c").underlying)
+
+  test("isEmptyBounded agrees with isEmpty once the cap is generous enough") {
+    assertEquals(disjointIntersection.isEmptyBounded(10_000), Right(disjointIntersection.isEmpty))
+    assertEquals(s("a").isEmptyBounded(10_000), Right(s("a").isEmpty))
+  }
+
+  test("isEmptyBounded fails fast, without exploring further, once the cap is too small") {
+    assertEquals(disjointIntersection.isEmptyBounded(1), Left(StateSpaceLimitExceeded(1)))
+  }
+
+  test("isEmptyBounded(0) always fails: even the start state alone exceeds a zero cap") {
+    assertEquals(s(Empty).isEmptyBounded(0), Left(StateSpaceLimitExceeded(0)))
+    assertEquals(s(Empty).isEmptyBounded(1), Right(true))
+  }
+
+  test("subsetBounded agrees with subset once the cap is generous enough") {
+    assertEquals(s("a").subsetBounded(s("[a-z]"), 10_000), Right(true))
+    assertEquals(s("[a-z]").subsetBounded(s("a"), 10_000), Right(false))
+  }
+
+  test("subsetBounded fails fast once the cap is too small") {
+    assert(disjointIntersection.subsetBounded(s(Empty), 1).isLeft)
+  }
