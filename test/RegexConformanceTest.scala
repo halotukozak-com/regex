@@ -6,10 +6,11 @@ package halotukozak.regex
  * pattern/expectation data is adapted here (translated to this library's API) — not the
  * original test code itself.
  *
- * Cases exercising features this engine intentionally doesn't support (POSIX/Unicode property
- * classes, lookbehind, backreferences, named groups, or a Matcher-style find/replace/split API
- * this engine never had) are `ignore`d with a `TODO` rather than deleted, so the gap stays
- * visible instead of silently disappearing. Lookahead is supported, so those cases run for real.
+ * Cases exercising features this engine intentionally doesn't support (lookbehind,
+ * backreferences, named groups, or a Matcher-style find/replace/split API this engine never
+ * had) are `ignore`d with a `TODO` rather than deleted, so the gap stays visible instead of
+ * silently disappearing. Lookahead and POSIX/Unicode property classes are both supported, so
+ * those cases run for real.
  */
 class RegexConformanceTest extends munit.FunSuite:
 
@@ -122,10 +123,7 @@ class RegexConformanceTest extends munit.FunSuite:
     assertEquals(parse("[A-Z&&[A-Z]0-9]"), Regex.range('A', 'Z'))
   }
 
-  test(
-    ("jdk: POSIX/Unicode property classes \\p{Lower} etc. (unicodeClassesTest)" +
-      " - TODO: unsupported, parser rejects \\p/\\P with UnsupportedFeature").ignore,
-  ) {
+  test("jdk: POSIX/Unicode property classes \\p{Lower} etc. (unicodeClassesTest)") {
     assertEquals(parse("\\p{Lower}"), Regex.range('a', 'z'))
   }
 
@@ -303,10 +301,7 @@ class RegexConformanceTest extends munit.FunSuite:
     assert(!matches("((?=a)|x)a", "ya"))
   }
 
-  test(
-    ("dregex: POSIX character classes (testPosixCharacterClasses)" +
-      " - TODO: unsupported, \\p{...} is rejected at parse time").ignore,
-  ) {
+  test("dregex: POSIX character classes (testPosixCharacterClasses)") {
     assert(equiv("\\p{Lower}", "[a-z]"))
   }
 

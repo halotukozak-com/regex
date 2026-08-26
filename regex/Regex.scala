@@ -51,16 +51,17 @@ private def regexInterpolatorImpl(scExpr: Expr[StringContext])(using quotes: Quo
  * generated `unapply` methods is allowed.
  *
  * Supports literals, escapes (\d \D \s \S \w \W \t \n \r \f \a \e \v \cX \0[n[n]] \xhh
- * \x{h...h} \uhhhh \Q...\E \R and meta-escapes), character classes (including ranges, negation,
- * nested subclasses, and `&&` intersection), `.`, alternation `|`, non-capturing-style groups
- * `(...)`, lookahead `(?=...)` `(?!...)`, the `i` inline flag `(?i)` `(?-i)` `(?i:...)`
- * `(?-i:...)`, anchors `^` `$` `\A` `\Z` `\z`, quantifiers `*` `+` `?` `{n}` `{n,}` `{n,m}`
- * (bounds capped at [[Regex.maxRepeatBound]]).
+ * \x{h...h} \uhhhh \Q...\E \R and meta-escapes), Unicode property escapes `\p{...}` `\P{...}`
+ * (general categories and ASCII-only POSIX classes; see [[UnicodeCategories]]), character
+ * classes (including ranges, negation, nested subclasses, and `&&` intersection), `.`,
+ * alternation `|`, non-capturing-style groups `(...)`, lookahead `(?=...)` `(?!...)`, the `i`
+ * inline flag `(?i)` `(?-i)` `(?i:...)` `(?-i:...)`, anchors `^` `$` `\A` `\Z` `\z`, quantifiers
+ * `*` `+` `?` `{n}` `{n,}` `{n,m}` (bounds capped at [[Regex.maxRepeatBound]]).
  *
  * Unsupported (parser returns [[RegexParseError.UnsupportedFeature]]):
  * word-boundary anchors `\b` `\B`, `\G`, lookbehind `(?<=` `(?<!`,
- * backreferences `\1`..`\9` `\k<name>` `\g{...}`, Unicode properties `\p{...}`, grapheme
- * clusters `\X`.
+ * backreferences `\1`..`\9` `\k<name>` `\g{...}`, Unicode script/block properties
+ * (`\p{IsGreek}`, `\p{InGreek}`), grapheme clusters `\X`.
  *
  * For subset/emptiness/nullability queries and Brzozowski derivatives, see [[Subset]].
  */
