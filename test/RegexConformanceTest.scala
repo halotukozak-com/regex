@@ -309,3 +309,43 @@ class RegexConformanceTest extends munit.FunSuite:
   ) {
     assert(equiv("\\p{Lower}", "[a-z]"))
   }
+
+  // ---------------------------------------------------------------------------------------
+  // Anchor matching semantics, cross-checked against java.util.regex.Pattern.matches
+  // ---------------------------------------------------------------------------------------
+
+  test("anchors: ^/\\A at the true start behave as a no-op under matches() semantics") {
+    assert(matches("^a", "a"))
+    assert(matches("\\Aa", "a"))
+    assert(matches("^^a", "a"))
+  }
+
+  test("anchors: ^/\\A after something has already been consumed can never hold") {
+    // the crux of why ^ needs global, not local, handling: once `a` is consumed, `^` inside the
+    // untouched sibling `^b` still has to die, even though nothing derives it directly
+    assert(!matches("a^b", "ab"))
+    assert(!matches("a\\Ab", "ab"))
+    assert(!matches("a^", "a"))
+  }
+
+  test("anchors: ^ under Star only ever fires on the first iteration") {
+    assert(matches("(^a)*", ""))
+    assert(matches("(^a)*", "a"))
+    assert(!matches("(^a)*", "aa"))
+    assert(matches("(^a)+", "a"))
+    assert(!matches("(^a)+", "aa"))
+  }
+
+  test("anchors: $/\\Z/\\z require true end of input, no trailing-newline leniency under matches()") {
+    assert(matches("a$", "a"))
+    assert(!matches("a$", "a\n"))
+    assert(!matches("a$", "a\r\n"))
+    assert(matches("a\\Z", "a"))
+    assert(!matches("a\\Z", "a\n"))
+    assert(matches("a\\z", "a"))
+    assert(!matches("a\\z", "a\n"))
+  }
+
+  test("anchors: $ mid-pattern (something after it) can never hold") {
+    assert(!matches("a$b", "ab"))
+  }

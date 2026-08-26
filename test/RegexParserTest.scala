@@ -105,9 +105,30 @@ class RegexParserTest extends munit.FunSuite:
     assertEquals(parse("\\d"), Regex.range('0', '9'))
   }
 
-  test("rejects anchors") {
-    assertUnsupported(RegexParser.parse("^a"))
-    assertUnsupported(RegexParser.parse("a$"))
+  test("parses ^ as StartAnchor") {
+    assertEquals(parse("^a"), Regex.StartAnchor.concat(Regex.lit('a')))
+  }
+
+  test("parses $/\\Z/\\z as an end-of-input assertion") {
+    val endOfInput = Regex.lookahead(Regex(CharSet.all), positive = false)
+    assertEquals(parse("a$"), parse("a\\Z"))
+    assertEquals(parse("a$"), parse("a\\z"))
+    assertEquals(parse("a$"), Regex.lit('a').concat(endOfInput))
+  }
+
+  test("parses \\A as StartAnchor") {
+    assertEquals(parse("\\Aa"), parse("^a"))
+  }
+
+  test("rejects word-boundary and \\G anchors") {
+    assertUnsupported(RegexParser.parse("\\ba"))
+    assertUnsupported(RegexParser.parse("\\Ba"))
+    assertUnsupported(RegexParser.parse("\\Ga"))
+  }
+
+  test("rejects \\A/\\Z inside a character class") {
+    assertInvalidSyntax(RegexParser.parse("[\\A]"))
+    assertInvalidSyntax(RegexParser.parse("[\\Z]"))
   }
 
   test("parses positive lookahead") {

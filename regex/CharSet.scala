@@ -1,6 +1,6 @@
 package halotukozak.regex
 
-import scala.annotation.tailrec
+import scala.annotation.{nowarn, tailrec}
 import scala.collection.immutable.ArraySeq
 import scala.quoted.*
 import scala.util.boundary
@@ -59,6 +59,12 @@ object CharSet:
         case null => ()
         case c => builder += c
       of(builder.result())
+    // The `cs.union(other)` call below resolves to *this* extension method (verified: it
+    // returns the coalesced merge, not a plain concat) - but since `CharSet` is transparently
+    // `ArraySeq[Range]` in this defining scope, the compiler's overload search also considers
+    // (and warns about) `SeqOps`'s unrelated, deprecated `union`, even though it isn't the one
+    // actually called. `@nowarn` documents that this specific warning is a false positive.
+    @nowarn("cat=deprecation")
     def |(other: CharSet): CharSet = cs.union(other)
 
     infix def intersect(other: CharSet): CharSet =
