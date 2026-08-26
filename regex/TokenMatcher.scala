@@ -3,6 +3,8 @@ package halotukozak.regex
 import scala.annotation.{publicInBinary, tailrec}
 import scala.collection.immutable.{Queue, SortedSet}
 import scala.quoted.{Expr, Quotes, ToExpr, Varargs}
+import scala.util.boundary
+import scala.util.boundary.break
 
 /**
  * Compile-time counterpart to `regex"..."` (see [[Regex]]), but for a whole priority-ordered
@@ -120,51 +122,70 @@ object TokenMatcher:
   def fromRegexes(initial: Regex*): TokenMatcher = fromSubsets(initial.map(Subset.of)*)
 
   /** Build a matcher from pre-parsed subsets (use this from macros after compile-time parsing). */
-  def fromSubsets(initial: Subset*): TokenMatcher = compile(initial)
+  def fromSubsets(initial: Subset*): TokenMatcher =
+    compile(initial, Int.MaxValue).getOrElse(throw MatchError("unreachable: Int.MaxValue state cap exceeded"))
 
-  private def compile(patterns: Seq[Subset]): TokenMatcher =
-    val boundaries = SortedSet(0, CharSet.maxCodePoint + 1)
-      .concat(patterns.iterator.flatMap(_.underlying.alphabetBoundaries))
-      .init
-      .toArray
+  /**
+   * Like [[fromRegexes]], but fails fast with `Left(StateSpaceLimitExceeded(maxStates))` instead
+   * of exploring more than `maxStates` distinct derivative states while building the DFA - see
+   * [[StateSpaceLimitExceeded]]. Opt-in: [[fromRegexes]] itself stays uncapped for existing
+   * callers.
+   */
+  def fromRegexesBounded(maxStates: Int)(initial: Regex*): Either[StateSpaceLimitExceeded, TokenMatcher] =
+    fromSubsetsBounded(maxStates)(initial.map(Subset.of)*)
 
-    def isDead(state: Seq[Subset]): Boolean = state.forall(_ == Subset.empty)
+  /** Like [[fromSubsets]], but capped the way [[fromRegexesBounded]] caps [[fromRegexes]]. */
+  def fromSubsetsBounded(maxStates: Int)(initial: Subset*): Either[StateSpaceLimitExceeded, TokenMatcher] =
+    compile(initial, maxStates)
 
-    /**
-     * Derives `state` across every alphabet partition, assigning a fresh id (via `ids`) to any
-     * not-yet-seen resulting state. `discovered` lists those newly-seen states, in partition
-     * order, for the caller to enqueue for later exploration.
-     */
-    def deriveRow(
-      state: Seq[Subset],
-      ids: Map[Seq[Subset], Int],
-    ): (row: Vector[Int], ids: Map[Seq[Subset], Int], discovered: List[Seq[Subset]]) =
-      boundaries.indices.foldLeft((row = Vector.empty[Int], ids = ids, discovered = List.empty[Seq[Subset]])):
-        case ((row, ids, discovered), i) =>
-          val next = state.map(_.derive(boundaries(i)))
-          if isDead(next) then (row = row :+ -1, ids = ids, discovered = discovered)
-          else
-            ids.get(next) match
-              case Some(id) => (row = row :+ id, ids = ids, discovered = discovered)
-              case None =>
-                val id = ids.size
-                (row = row :+ id, ids = ids.updated(next, id), discovered = discovered :+ next)
+  private def compile(patterns: Seq[Subset], maxStates: Int): Either[StateSpaceLimitExceeded, TokenMatcher] =
+    boundary:
+      val boundaries = SortedSet(0, CharSet.maxCodePoint + 1)
+        .concat(patterns.iterator.flatMap(_.underlying.alphabetBoundaries))
+        .init
+        .toArray
 
-    @tailrec
-    def loop(
-      queue: Queue[Seq[Subset]],
-      ids: Map[Seq[Subset], Int],
-      transitions: Vector[Int],
-      accept: Vector[Int],
-    ): (transitions: Array[Int], accept: Array[Int]) =
-      queue.dequeueOption match
-        case None => (transitions = transitions.toArray, accept = accept.toArray)
-        case Some((state, rest)) =>
-          val (row, newIds, discovered) = deriveRow(state, ids)
-          loop(rest.enqueueAll(discovered), newIds, transitions ++ row, accept :+ firstNullable(state))
+      def isDead(state: Seq[Subset]): Boolean = state.forall(_ == Subset.empty)
 
-    val (transitions, accept) = loop(Queue(patterns), Map(patterns -> 0), Vector.empty, Vector.empty)
-    new TokenMatcher(boundaries, transitions, accept)
+      /**
+       * Derives `state` across every alphabet partition, assigning a fresh id (via `ids`) to any
+       * not-yet-seen resulting state. `discovered` lists those newly-seen states, in partition
+       * order, for the caller to enqueue for later exploration. `break`s out of the enclosing
+       * `compile` [[boundary]] the moment a discovery would push the visited-state count past
+       * `maxStates` - see [[StateSpaceLimitExceeded]].
+       */
+      def deriveRow(
+        state: Seq[Subset],
+        ids: Map[Seq[Subset], Int],
+      ): (row: Vector[Int], ids: Map[Seq[Subset], Int], discovered: List[Seq[Subset]]) =
+        boundaries.indices.foldLeft((row = Vector.empty[Int], ids = ids, discovered = List.empty[Seq[Subset]])):
+          case ((row, ids, discovered), i) =>
+            val next = state.map(_.derive(boundaries(i)))
+            if isDead(next) then (row = row :+ -1, ids = ids, discovered = discovered)
+            else
+              ids.get(next) match
+                case Some(id) => (row = row :+ id, ids = ids, discovered = discovered)
+                case None =>
+                  val id = ids.size
+                  if id >= maxStates then break(Left(StateSpaceLimitExceeded(maxStates)))
+                  (row = row :+ id, ids = ids.updated(next, id), discovered = discovered :+ next)
+
+      @tailrec
+      def loop(
+        queue: Queue[Seq[Subset]],
+        ids: Map[Seq[Subset], Int],
+        transitions: Vector[Int],
+        accept: Vector[Int],
+      ): (transitions: Array[Int], accept: Array[Int]) =
+        queue.dequeueOption match
+          case None => (transitions = transitions.toArray, accept = accept.toArray)
+          case Some((state, rest)) =>
+            val (row, newIds, discovered) = deriveRow(state, ids)
+            loop(rest.enqueueAll(discovered), newIds, transitions ++ row, accept :+ firstNullable(state))
+
+      if maxStates < 1 then break(Left(StateSpaceLimitExceeded(maxStates)))
+      val (transitions, accept) = loop(Queue(patterns), Map(patterns -> 0), Vector.empty, Vector.empty)
+      Right(new TokenMatcher(boundaries, transitions, accept))
 
   private def firstNullable(state: Seq[Subset]): Int =
     state.iterator.zipWithIndex.collectFirst { case (sub, idx) if sub.nullable => idx }.getOrElse(-1)

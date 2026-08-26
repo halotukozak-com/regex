@@ -238,3 +238,35 @@ class TokenMatcherTest extends munit.FunSuite:
     val m = matcher("[0-9][_0-9]*[Uu]?[Ll]?\\.\\.", "[0-9][_0-9]*[Uu]?[Ll]?")
     assertEquals(m.matchAt("1..10", 0), Some((priority = 0, end = 3)))
   }
+
+  // fromRegexesBounded / fromSubsetsBounded --------------------------------
+
+  test("fromRegexesBounded agrees with fromRegexes once the cap is generous enough") {
+    val bounded = TokenMatcher.fromRegexesBounded(10_000)(parse("if"), parse("[a-zA-Z_][a-zA-Z0-9_]*"))
+    assert(bounded.isRight)
+    assertEquals(bounded.toOption.get.matchAt("ifx", 0), matcher("if", "[a-zA-Z_][a-zA-Z0-9_]*").matchAt("ifx", 0))
+  }
+
+  test("fromRegexesBounded fails fast once the cap is too small to build even the start state") {
+    assertEquals(TokenMatcher.fromRegexesBounded(0)(parse("[a-zA-Z_][a-zA-Z0-9_]*")), Left(StateSpaceLimitExceeded(0)))
+  }
+
+  // A 100-way alternation of distinct fixed-length tokens builds a sizeable prefix-trie of DFA
+  // states (same idea as `manyStatesEmpty` in `SubsetBenchmark`) - enough states that a cap of 1
+  // is exceeded well before `compile` finishes, but a generous cap still succeeds.
+  private lazy val manyStatesPattern = (0 until 100).map(i => Regex.literal(f"token$i%03d")).reduce(_ | _)
+
+  test("fromRegexesBounded stays well-behaved (no exponential blowup) on a wide alternation") {
+    assertEquals(TokenMatcher.fromRegexesBounded(1)(manyStatesPattern), Left(StateSpaceLimitExceeded(1)))
+    assert(TokenMatcher.fromRegexesBounded(10_000)(manyStatesPattern).isRight)
+  }
+
+  // Classic ReDoS-shaped input: `(a|aa)*b` would catastrophically backtrack in a backtracking
+  // engine. This engine has no backtracking, but the derivative-based state space it explores
+  // instead has no bound of its own without an explicit cap - this asserts building a DFA from
+  // several such patterns, combined and negated, stays within a modest cap instead of blowing up.
+  test("fromRegexesBounded stays well-behaved on classic ReDoS-shaped patterns combined/negated") {
+    val redosLike = parse("(a|aa)*b")
+    val combined = redosLike.concat(redosLike) | !redosLike
+    assert(TokenMatcher.fromRegexesBounded(1_000)(redosLike, combined).isRight)
+  }

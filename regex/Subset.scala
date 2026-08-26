@@ -6,6 +6,8 @@ import halotukozak.regex.Regex.{Empty, Eps, *}
 import scala.annotation.tailrec
 import scala.collection.immutable.{Queue, SortedSet}
 import scala.quoted.{Expr, Quotes, ToExpr}
+import scala.util.boundary
+import scala.util.boundary.break
 
 /**
  * Opaque view over a [[Regex]] exposing Brzozowski-derivative based language emptiness
@@ -16,6 +18,23 @@ import scala.quoted.{Expr, Quotes, ToExpr}
  * derivative state set finite up to similarity.
  */
 opaque type Subset = Regex
+
+/**
+ * Raised (as a `Left`, never thrown) by [[Subset.isEmptyBounded]], [[Subset.subsetBounded]],
+ * [[TokenMatcher.fromRegexesBounded]], and [[TokenMatcher.fromSubsetsBounded]] when deciding the
+ * answer would require visiting more than `limit` distinct derivative states.
+ *
+ * This engine has no classic backtracking, so it isn't exposed to catastrophic-backtracking
+ * ReDoS in the traditional sense - but the derivative state space these operations explore has
+ * no bound of its own: a pattern built to maximize distinct derivative states (many overlapping
+ * alternations/intersections/bounded repetitions near [[Regex.maxRepeatBound]]) can still make
+ * either slow or memory-heavy. That matters wherever pattern strings come from untrusted input,
+ * e.g. `Subset`'s stated use case of validating one pattern against another at load/build time.
+ * The bounded methods this guards are opt-in: the plain `isEmpty`/`subset`/`fromRegexes`/
+ * `fromSubsets` stay uncapped, unchanged, for every existing caller.
+ */
+final case class StateSpaceLimitExceeded(limit: Int):
+  override def toString: String = s"derivative state-space limit ($limit distinct states) exceeded"
 
 object Subset:
 
@@ -38,6 +57,15 @@ object Subset:
     /** `true` iff `L(a) ⊆ L(b)`. */
     def subset(b: Subset): Boolean = (a & !b).isEmpty
 
+    /**
+     * Like [[subset]], but fails fast with [[StateSpaceLimitExceeded]] instead of letting the
+     * underlying [[isEmptyBounded]] BFS visit more than `maxStates` distinct derivative states -
+     * see [[StateSpaceLimitExceeded]] for why that matters on untrusted patterns.
+     */
+    def subsetBounded(b: Subset, maxStates: Int): Either[StateSpaceLimitExceeded, Boolean] = (a & !b).isEmptyBounded(
+      maxStates,
+    )
+
     /** `true` iff `L(a) ⊆ L(b)` and `L(a) ≠ L(b)`. */
     def properSubset(b: Subset): Boolean = a.subset(b) && !b.subset(a)
 
@@ -54,6 +82,27 @@ object Subset:
               loop(rest.enqueueAll(next), visited ++ next)
 
       loop(Queue(a), Set(a))
+
+    /**
+     * Like [[isEmpty]], but fails fast with `Left(StateSpaceLimitExceeded(maxStates))` the
+     * moment the BFS would need to have visited more than `maxStates` distinct derivative
+     * states to keep going, instead of exploring an unbounded number of them. Opt-in guard for
+     * callers deciding emptiness/subset (see [[subsetBounded]]) of a pattern that may come from
+     * untrusted input - see [[StateSpaceLimitExceeded]].
+     */
+    def isEmptyBounded(maxStates: Int): Either[StateSpaceLimitExceeded, Boolean] = boundary:
+      @tailrec def loop(queue: Queue[Regex], visited: Set[Regex]): Boolean =
+        if visited.size > maxStates then break(Left(StateSpaceLimitExceeded(maxStates)))
+        queue.dequeueOption match
+          case None => true
+          case Some((s, rest)) =>
+            if s.nullable then false
+            else
+              val derived = deriveAt(partitionReps(s), 0, s, Nil)
+              val next = derived.filterNot(visited.contains)
+              loop(rest.enqueueAll(next), visited ++ next)
+
+      Right(loop(Queue(a), Set(a)))
 
     /** `true` iff `ε ∈ L(a)`. */
     def nullable: Boolean = a.nullable
