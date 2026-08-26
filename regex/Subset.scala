@@ -58,21 +58,33 @@ object Subset:
   def of(r: Regex): Subset = eraseGroups(r)
 
   /**
-   * See [[of]]. Plain structural recursion (not `deepRecursive`): unlike `derive`, this runs
-   * once per `of` call, not once per character of a match, so it's not on the per-derivative-
-   * step hot path `concat`/`derive` are - the same reasoning `nullable`/`alphabetBoundaries`
-   * (also plain recursion) already rely on.
+   * See [[of]]. `deepRecursive`, same as `rawDerive`: a pattern built entirely out of nested
+   * groups - `(((((...)))))` - recurses through this function exactly as deep as `rawDerive`
+   * would recurse deriving the equivalent group-free pattern, so this needs the same heap-based
+   * trampoline for stack safety, for the same reason.
    */
-  private def eraseGroups(r: Regex): Regex = r match
-    case Eps | Empty | Chars(_) | StartAnchor => r
-    case Concat(a, b) => eraseGroups(a).concat(eraseGroups(b))
-    case Alt(parts) => Regex.alt(parts.map(eraseGroups))
-    case Inter(parts) => Regex.inter(parts.map(eraseGroups))
-    case Star(inner) => eraseGroups(inner).star
-    case Repeat(inner, lo, hi) => eraseGroups(inner).repeat(lo, hi)
-    case Compl(inner) => !eraseGroups(inner)
-    case Look(inner, positive) => Regex.lookahead(eraseGroups(inner), positive)
-    case Group(_, _, inner) => eraseGroups(inner)
+  private def eraseGroups(r: Regex): Regex = deepRecursive:
+    r match
+      case Eps | Empty | Chars(_) | StartAnchor => r
+      case Concat(a, b) => eraseGroups(a).concat(eraseGroups(b))
+      case Alt(parts) => Regex.alt(eraseGroupsAll(parts.toList, Nil))
+      case Inter(parts) => Regex.inter(eraseGroupsAll(parts.toList, Nil))
+      case Star(inner) => eraseGroups(inner).star
+      case Repeat(inner, lo, hi) => eraseGroups(inner).repeat(lo, hi)
+      case Compl(inner) => !eraseGroups(inner)
+      case Look(inner, positive) => Regex.lookahead(eraseGroups(inner), positive)
+      case Group(_, _, inner) => eraseGroups(inner)
+
+  /**
+   * Like [[deriveAll]]/[[deriveAllConcat]]: a plain `@tailrec` loop over `parts` rather than
+   * `parts.map(eraseGroups)`, since a self-call inside the closure `.map` passes wouldn't be
+   * something `deepRecursive` can trampoline (see its own docs) - each part instead re-enters
+   * `eraseGroups` as a fresh top-level call.
+   */
+  @tailrec
+  private def eraseGroupsAll(parts: List[Regex], acc: List[Regex]): List[Regex] = parts match
+    case Nil => acc
+    case head :: tail => eraseGroupsAll(tail, eraseGroups(head) :: acc)
 
   /** Parses a pattern into a [[Subset]]. */
   def parse(pattern: String): Either[RegexParseError, Subset] = RegexParser.parse(pattern).map(of)
