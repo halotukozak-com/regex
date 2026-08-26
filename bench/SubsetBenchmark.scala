@@ -61,3 +61,44 @@ class SubsetBenchmark:
   @Benchmark
   def deriveChain(): Boolean =
     "user@example.com".foldLeft(narrow)((s, c) => s.derive(c.toInt)).nullable
+
+  // A leading lookahead re-derives its own body alongside the continuation at every step
+  // (Concat(Look(...), b)'s special case) - directly comparable to deriveChain above (same
+  // 17-char input), showing the delta that extra derivation costs.
+  private val lookaheadGuarded =
+    Subset.parse("""(?=[a-zA-Z0-9._%+-]+@)[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(com|org|net|io)""").toOption.get
+
+  @Benchmark
+  def deriveChainWithLookahead(): Boolean =
+    "user@example.com".foldLeft(lookaheadGuarded)((s, c) => s.derive(c.toInt)).nullable
+
+  // Exercises the pricier Concat(Alt(parts), b) redistribution path, only taken when an Alt
+  // branch is itself a leading lookahead (see Subset.derive's doc) - the first character has
+  // to derive every branch concatenated with the continuation separately, instead of sharing
+  // it the way an ordinary alternation does.
+  private val lookaheadInAlternation = Subset.parse("""((?=a)|[b-z])[a-z]{0,20}""").toOption.get
+
+  @Benchmark
+  def deriveChainWithLookaheadInAlt(): Boolean =
+    "bxxxxxxxxxxxxxxxxxxxx".foldLeft(lookaheadInAlternation)((s, c) => s.derive(c.toInt)).nullable
+
+  // ^/\A cost an unconditional hasStartAnchor check on every derive() result (see
+  // stripStartAnchor's doc); guarded so it's a single boolean read once the anchor is gone
+  // from the residual (after the first character) rather than a tree walk. Comparable to
+  // deriveChain above.
+  private val anchored =
+    Subset.parse("""^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(com|org|net|io)$""").toOption.get
+
+  @Benchmark
+  def deriveChainWithAnchors(): Boolean =
+    "user@example.com".foldLeft(anchored)((s, c) => s.derive(c.toInt)).nullable
+
+  // (?i) folding happens entirely at parse time (see RegexBenchmark.parseCaseInsensitive for
+  // that cost) - derive-time cost here is only whatever a handful of extra CharSet ranges adds
+  // to contains's binary search, so this should land close to deriveChain above.
+  private val caseInsensitive =
+    Subset.parse("""(?i)[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(COM|ORG|NET|IO)""").toOption.get
+
+  @Benchmark
+  def deriveChainCaseInsensitive(): Boolean =
+    "USER@EXAMPLE.COM".foldLeft(caseInsensitive)((s, c) => s.derive(c.toInt)).nullable
