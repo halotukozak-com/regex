@@ -32,19 +32,21 @@ object RegexParseError:
  *
  * Supported subset (see [[Regex]] doc): literals, escapes (\d \D \s \S \w \W \t \n \r \f
  * \a \e \v \cX \0[n[n]] \xhh \x{h...h} \uhhhh \Q...\E \R and meta-escapes \. \* \+ \? \(
- * \) \[ \] \{ \} \| \^ \$ \-), `.`, char classes `[...]` `[^...]` with ranges, nested shorthand
- * escapes (`[\da-f]`), nested subclasses, and `&&` intersection (`[a-z&&[^aeiou]]`) (`\b`
- * inside a class means backspace, matching Java), alternation `|`, groups `(...)` (capturing or
- * `(?:...)`), lookahead `(?=...)` `(?!...)`, the `i` inline flag `(?i)` `(?-i)` `(?i:...)`
- * `(?-i:...)` (ASCII-only case folding, matching Java's `CASE_INSENSITIVE` without
- * `UNICODE_CASE`), quantifiers `*` `+` `?` `{n}` `{n,}` `{n,m}` (bounds capped at
- * [[Regex.maxRepeatBound]]), anchors `^` `$` `\A` `\Z` `\z`.
+ * \) \[ \] \{ \} \| \^ \$ \-), Unicode property escapes \p{...} \P{...} (general categories
+ * like `L`/`Lu`/`Nd`, and the ASCII-only POSIX classes like `Alpha`/`Digit` - see
+ * [[UnicodeCategories]]; script/block properties are unsupported), `.`, char classes `[...]`
+ * `[^...]` with ranges, nested shorthand escapes (`[\da-f]`), nested subclasses, and `&&`
+ * intersection (`[a-z&&[^aeiou]]`) (`\b` inside a class means backspace, matching Java),
+ * alternation `|`, groups `(...)` (capturing or `(?:...)`), lookahead `(?=...)` `(?!...)`, the
+ * `i` inline flag `(?i)` `(?-i)` `(?i:...)` `(?-i:...)` (ASCII-only case folding, matching
+ * Java's `CASE_INSENSITIVE` without `UNICODE_CASE`), quantifiers `*` `+` `?` `{n}` `{n,}`
+ * `{n,m}` (bounds capped at [[Regex.maxRepeatBound]]), anchors `^` `$` `\A` `\Z` `\z`.
  *
  * Unsupported: word-boundary anchors `\b` `\B`, `\G`, lookbehind, backreferences
- * `\1`..`\9` `\k<name>` `\g{...}`, Unicode properties `\p{...}`, grapheme clusters `\X`,
- * named groups, other inline flags (`(?m)`, `(?s)`, `(?d)`, `(?u)`, `(?x)`, `(?U)`). Any other
- * undefined letter escape (e.g. `\m`, `\y`, `\q`) is rejected as invalid syntax, matching
- * `java.util.regex.Pattern`'s own behavior.
+ * `\1`..`\9` `\k<name>` `\g{...}`, Unicode script/block properties (`\p{IsGreek}`,
+ * `\p{InGreek}`, etc.), grapheme clusters `\X`, named groups, other inline flags (`(?m)`,
+ * `(?s)`, `(?d)`, `(?u)`, `(?x)`, `(?U)`). Any other undefined letter escape (e.g. `\m`, `\y`,
+ * `\q`) is rejected as invalid syntax, matching `java.util.regex.Pattern`'s own behavior.
  */
 object RegexParser:
 
@@ -76,6 +78,34 @@ object RegexParser:
     Range('A', 'Z'),
     Range('0', '9'),
     Range('_', '_'),
+  )
+
+  /**
+   * ASCII-only POSIX classes for `\p{Lower}` etc., matching `java.util.regex.Pattern`'s default
+   * (non-`UNICODE_CHARACTER_CLASS`) behavior: unlike general-category names (`\p{L}`, `\p{Nd}`,
+   * ...; see [[UnicodeCategories]]), which are always true Unicode, these predefined POSIX names
+   * are always plain ASCII regardless of any Unicode-awareness flag - the same ASCII-only
+   * restriction this parser already makes for `(?i)`.
+   */
+  private val posixClasses: Map[String, CharSet] = Map(
+    "Lower" -> CharSet.range('a', 'z'),
+    "Upper" -> CharSet.range('A', 'Z'),
+    "ASCII" -> CharSet.range(0, 0x7f),
+    "Alpha" -> CharSet.normalize(Range('a', 'z'), Range('A', 'Z')),
+    "Digit" -> CharSet.range('0', '9'),
+    "Alnum" -> CharSet.normalize(Range('a', 'z'), Range('A', 'Z'), Range('0', '9')),
+    // `[\p{Alnum}\p{Punct}]` (Graph, below) covers exactly 0x21-0x7e, so listing the individual
+    // punctuation characters (as the Java javadoc's own definition does) would just describe the
+    // same range through 32 separate one-character `Range`s.
+    "Punct" -> (
+      CharSet.range(0x21, 0x2f) | CharSet.range(0x3a, 0x40) | CharSet.range(0x5b, 0x60) | CharSet.range(0x7b, 0x7e)
+    ),
+    "Graph" -> CharSet.range(0x21, 0x7e),
+    "Print" -> CharSet.range(0x20, 0x7e),
+    "Blank" -> CharSet.normalize(Range(' ', ' '), Range('\t', '\t')),
+    "Cntrl" -> CharSet.normalize(Range(0x00, 0x1f), Range(0x7f, 0x7f)),
+    "XDigit" -> CharSet.normalize(Range('0', '9'), Range('a', 'f'), Range('A', 'F')),
+    "Space" -> whitespaceSet,
   )
 
   /** What `\R` matches as a single code point, i.e. everything but the two-char `\r\n` case. */
@@ -499,7 +529,7 @@ object RegexParser:
         // ever hit for the in-class path (`[\A]` etc.) - Java rejects those as invalid syntax
         // (not merely unsupported), which the fallthrough to the `isLetter` case below matches.
         case 'G' => unsupported(s"anchor `\\$c`")
-        case 'p' | 'P' => unsupported("Unicode property")
+        case 'p' | 'P' => Left(parseUnicodeProperty(negated = c == 'P'))
         case 'k' => unsupported("named backreference `\\k`")
         case 'g' => unsupported("backreference `\\g`")
         case 'X' => unsupported("grapheme cluster `\\X`")
@@ -511,6 +541,27 @@ object RegexParser:
           if c.isDigit then unsupported(s"backreference `\\$c`")
           else if c.isLetter then fail(s"illegal/unsupported escape sequence `\\$c` at position $pos")
           else Right(c.toInt)
+
+    /**
+     * `\p{Name}` / `\P{Name}` (negated): a Unicode general category (`L`, `Lu`, `Nd`, ...; see
+     * [[UnicodeCategories]]) or an ASCII-only POSIX class (`Lower`, `Alpha`, ..., in
+     * `posixClasses` above). Script/block properties (`IsGreek`, `InGreek`, ...) and other named
+     * binary properties aren't recognized - `unsupported`, not `fail`, since the `\p{...}`
+     * syntax itself is well-formed, just naming a property this parser doesn't implement.
+     */
+    private def parseUnicodeProperty(negated: Boolean): CharSet =
+      if eof || cur != '{' then fail(s"expected `{` after `\\${if negated then 'P' else 'p'}` at position $pos")
+      pos += 1
+      val start = pos
+      while !eof && cur != '}' do pos += 1
+      if eof then fail("unterminated `\\p{...}` escape")
+      val name = src.substring(start, pos)
+      pos += 1
+      val set = UnicodeCategories
+        .get(name)
+        .orElse(posixClasses.get(name))
+        .getOrElse(unsupported(s"Unicode property `\\${if negated then 'P' else 'p'}{$name}`"))
+      if negated then set.complement else set
 
     /** `\cx`: control character `x XOR 0x40`. */
     private def readControlEscape(): Int =

@@ -279,6 +279,52 @@ class RegexParserTest extends munit.FunSuite:
     )
   }
 
+  test("parses \\p{Lower}/\\p{Upper} POSIX classes as plain ASCII ranges") {
+    assertEquals(parse("\\p{Lower}"), Regex.range('a', 'z'))
+    assertEquals(parse("\\p{Upper}"), Regex.range('A', 'Z'))
+  }
+
+  test("parses \\p{Alpha}/\\p{Alnum} as the union POSIX defines them as") {
+    assertEquals(parse("\\p{Alpha}"), Regex(CharSet.normalize(Range('a', 'z'), Range('A', 'Z'))))
+    assertEquals(parse("\\p{Alnum}"), Regex(CharSet.normalize(Range('a', 'z'), Range('A', 'Z'), Range('0', '9'))))
+  }
+
+  test("parses \\p{Space} identically to \\s") {
+    assertEquals(parse("\\p{Space}"), parse("\\s"))
+  }
+
+  test("\\P{Name} is the complement of \\p{Name}") {
+    assertEquals(parse("\\P{Lower}"), Regex(CharSet.range('a', 'z').complement))
+    assertEquals(parse("\\P{Lower}"), parse("[^\\p{Lower}]"))
+  }
+
+  test("\\p{L} etc. are true Unicode general categories, a proper superset of the ASCII-only POSIX classes") {
+    // \p{Lower}/\p{Upper} (ASCII-only POSIX) are proper subsets of \p{Ll}/\p{Lu} (true Unicode
+    // general categories): every ASCII letter is categorized as Ll/Lu, but Ll/Lu also include
+    // non-ASCII lowercase/uppercase letters (e.g. 'é'/'É') that \p{Lower}/\p{Upper} exclude.
+    def s(pattern: String): Subset = Subset.parse(pattern) match
+      case Right(sub) => sub
+      case Left(err) => fail(s"expected successful parse of /$pattern/, got $err")
+    assert(s("\\p{Lower}").properSubset(s("\\p{Ll}")))
+    assert(s("\\p{Upper}").properSubset(s("\\p{Lu}")))
+    assert(s("[\\p{Lower}\\p{Upper}]").properSubset(s("\\p{L}")))
+  }
+
+  test("\\p{Name} works inside a character class") {
+    assertEquals(parse("[\\p{Lower}]"), Regex.range('a', 'z'))
+    assertEquals(parse("[\\p{Digit}a-c]"), Regex(CharSet.range('0', '9').union(CharSet.normalize(Range('a', 'c')))))
+  }
+
+  test("rejects an unrecognized \\p{...} property name") {
+    assertUnsupported(RegexParser.parse("\\p{IsGreek}"))
+    assertUnsupported(RegexParser.parse("\\p{NoSuchProperty}"))
+  }
+
+  test("rejects a bare \\p/\\P without braces, and an unterminated \\p{...}") {
+    assertInvalidSyntax(RegexParser.parse("\\pL"))
+    assertInvalidSyntax(RegexParser.parse("\\p{Lower"))
+  }
+
   test("rejects unclosed char class") {
     assertInvalidSyntax(RegexParser.parse("[abc"))
   }
