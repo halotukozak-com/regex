@@ -52,11 +52,11 @@ private def regexInterpolatorImpl(scExpr: Expr[StringContext])(using quotes: Quo
  * Supports literals, escapes (\d \D \s \S \w \W \t \n \r \f \a \e \v \cX \0[n[n]] \xhh
  * \x{h...h} \uhhhh \Q...\E \R and meta-escapes), character classes (including ranges, negation,
  * nested subclasses, and `&&` intersection), `.`, alternation `|`, non-capturing-style groups
- * `(...)`, lookahead `(?=...)` `(?!...)`, quantifiers `*` `+` `?` `{n}` `{n,}` `{n,m}` (bounds
- * capped at [[Regex.maxRepeatBound]]).
+ * `(...)`, lookahead `(?=...)` `(?!...)`, anchors `^` `$` `\A` `\Z` `\z`, quantifiers `*` `+` `?`
+ * `{n}` `{n,}` `{n,m}` (bounds capped at [[Regex.maxRepeatBound]]).
  *
  * Unsupported (parser returns [[RegexParseError.UnsupportedFeature]]):
- * anchors `^` `$` `\b` `\B` `\A` `\Z` `\z` `\G`, lookbehind `(?<=` `(?<!`,
+ * word-boundary anchors `\b` `\B`, `\G`, lookbehind `(?<=` `(?<!`,
  * backreferences `\1`..`\9` `\k<name>` `\g{...}`, Unicode properties `\p{...}`, grapheme
  * clusters `\X`.
  *
@@ -96,6 +96,17 @@ enum Regex:
   case Look private[Regex] (r: Regex, positive: Boolean)
 
   /**
+   * `^`/`\A` (start-of-input anchor). Unlike [[Look]], this can't be resolved by re-deriving a
+   * sub-pattern alongside whatever follows it - it's satisfied only in the state before any
+   * character has been consumed *by anything*, anywhere in the whole match, not just locally at
+   * this node. See [[Subset.derive]]'s unconditional post-pass, which is what actually enforces
+   * that. `$`/`\Z`/`\z` don't need an equivalent node - under this library's whole-string
+   * `matches()` semantics they're all exactly `(?!.)` (negative lookahead of any code point),
+   * expressed directly with [[Look]] at parse time.
+   */
+  case StartAnchor
+
+  /**
    * Cached: this tree is immutable and gets hashed repeatedly by the `Set`-based ACI
    * normalization in `Regex.alt`/`Regex.inter` and by the visited-state set driving
    * Brzozowski derivative exploration in [[Subset]] — recomputing structurally every time
@@ -118,6 +129,7 @@ enum Regex:
     case Star(_) => true
     case Compl(inner) => !inner.nullable
     case Look(r, positive) => if positive then r.nullable else !r.nullable
+    case StartAnchor => true
 
   /**
    * Cached: sorted boundary points (range starts, and one-past-the-end of range ends) of
@@ -137,6 +149,24 @@ enum Regex:
     case Star(inner) => inner.alphabetBoundaries
     case Compl(inner) => inner.alphabetBoundaries
     case Look(r, _) => r.alphabetBoundaries
+    case StartAnchor => SortedSet.empty
+
+  /**
+   * Cached: `true` iff `^`/`\A` occurs anywhere in this tree, including inside [[Look]] bodies
+   * (a start-anchor there refers to the same global position as the `Look` node itself) and
+   * [[Star]] bodies (loop iterations past the first can never be at position 0 again). Guards
+   * `Subset.derive`'s post-derivation strip pass so it's a single cheap check - not a tree
+   * walk - for the overwhelming majority of patterns that never use `^`/`\A` at all.
+   */
+  @threadUnsafe lazy val hasStartAnchor: Boolean = this match
+    case StartAnchor => true
+    case Eps | Empty | Chars(_) => false
+    case Concat(a, b) => a.hasStartAnchor || b.hasStartAnchor
+    case Alt(parts) => parts.exists(_.hasStartAnchor)
+    case Inter(parts) => parts.exists(_.hasStartAnchor)
+    case Star(inner) => inner.hasStartAnchor
+    case Compl(inner) => inner.hasStartAnchor
+    case Look(r, _) => r.hasStartAnchor
 
   /** Alternation: `this | other`. */
   infix def |(other: Regex): Regex = Regex.alt(Set(this, other))
@@ -268,6 +298,7 @@ object Regex:
       case Star(inner) => '{ ${ Expr(inner) }.star }
       case Compl(inner) => '{ ! ${ Expr(inner) } }
       case Look(r, positive) => '{ Regex.lookahead(${ Expr(r) }, ${ Expr(positive) }) }
+      case StartAnchor => '{ Regex.StartAnchor }
   // $COVERAGE-ON$
 
 extension [A, CC[X] <: Iterable[X]](xs: scala.collection.IterableOps[A, CC, CC[A]])

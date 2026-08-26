@@ -36,9 +36,10 @@ object RegexParseError:
  * escapes (`[\da-f]`), nested subclasses, and `&&` intersection (`[a-z&&[^aeiou]]`) (`\b`
  * inside a class means backspace, matching Java), alternation `|`, groups `(...)` (capturing or
  * `(?:...)`, flag groups are NOT supported), lookahead `(?=...)` `(?!...)`, quantifiers `*` `+`
- * `?` `{n}` `{n,}` `{n,m}` (bounds capped at [[Regex.maxRepeatBound]]).
+ * `?` `{n}` `{n,}` `{n,m}` (bounds capped at [[Regex.maxRepeatBound]]), anchors `^` `$` `\A` `\Z`
+ * `\z`.
  *
- * Unsupported: anchors `^` `$` `\b` `\B` `\A` `\Z` `\z` `\G`, lookbehind, backreferences
+ * Unsupported: word-boundary anchors `\b` `\B`, `\G`, lookbehind, backreferences
  * `\1`..`\9` `\k<name>` `\g{...}`, Unicode properties `\p{...}`, grapheme clusters `\X`,
  * named groups, flag groups. Any other undefined letter escape (e.g. `\m`, `\y`, `\q`) is
  * rejected as invalid syntax, matching `java.util.regex.Pattern`'s own behavior.
@@ -78,6 +79,17 @@ object RegexParser:
     Range(0x85, 0x85),
     Range(0x2028, 0x2029),
   )
+
+  /**
+   * `$` / `\Z` / `\z`. Under this library's whole-string `matches()` semantics (never `find`),
+   * all three coincide exactly: none of them can themselves consume the trailing line
+   * terminator Java's `$`/`\Z` are normally lenient about — that leniency only matters for
+   * `find`/`lookingAt`-style matching, where trailing input is allowed to go unconsumed. Here
+   * "assert nothing remains" is precisely "no single code point (incl. line terminators) can
+   * follow", i.e. `(?!.)` with `.` meaning *any* code point, not the `dotDefault` used for a
+   * literal `.` atom.
+   */
+  private val endOfInput: Regex = Regex.lookahead(Regex(CharSet.all), positive = false)
 
   /**
    * Parse `pattern` into a [[Regex]]. Returns [[Left]] with structured error info if the
@@ -198,7 +210,12 @@ object RegexParser:
           pos += 1
           Regex(CharSet.dotDefault)
         case '\\' => parseEscape()
-        case '^' | '$' => unsupported(s"anchor `${consume()}`")
+        case '^' =>
+          pos += 1
+          Regex.StartAnchor
+        case '$' =>
+          pos += 1
+          endOfInput
         case ')' | '|' | '*' | '+' | '?' | '{' | '}' | ']' =>
           fail(s"unexpected `$cur` at position $pos")
         case c =>
@@ -319,6 +336,12 @@ object RegexParser:
         case 'R' =>
           pos += 1
           Regex.literal("\r\n") | Regex(linebreakSet)
+        case 'A' =>
+          pos += 1
+          Regex.StartAnchor
+        case 'Z' | 'z' =>
+          pos += 1
+          endOfInput
         case _ =>
           readEscapedChar(inClass = false) match
             case Left(set) => Regex(set)
@@ -356,7 +379,10 @@ object RegexParser:
         case 'v' => Right(0x0b)
         case 'b' => if inClass then Right(0x08) else unsupported(s"word boundary `\\$c`")
         case 'B' => unsupported(s"word boundary `\\$c`")
-        case 'A' | 'Z' | 'z' | 'G' => unsupported(s"anchor `\\$c`")
+        // `\A`/`\Z`/`\z` are handled in `parseEscape` before reaching here, so this is only
+        // ever hit for the in-class path (`[\A]` etc.) - Java rejects those as invalid syntax
+        // (not merely unsupported), which the fallthrough to the `isLetter` case below matches.
+        case 'G' => unsupported(s"anchor `\\$c`")
         case 'p' | 'P' => unsupported("Unicode property")
         case 'k' => unsupported("named backreference `\\k`")
         case 'g' => unsupported("backreference `\\g`")

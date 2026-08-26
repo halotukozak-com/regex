@@ -6,7 +6,6 @@ import halotukozak.regex.Regex.{Empty, Eps, *}
 import scala.annotation.tailrec
 import scala.collection.immutable.{Queue, SortedSet}
 import scala.quoted.{Expr, Quotes, ToExpr}
-import scala.util.control.TailCalls.{done, tailcall, TailRec}
 
 /**
  * Opaque view over a [[Regex]] exposing Brzozowski-derivative based language emptiness
@@ -59,11 +58,21 @@ object Subset:
     /** `true` iff `ε ∈ L(a)`. */
     def nullable: Boolean = a.nullable
 
-    /** Brzozowski derivative of `a` with respect to code point `c`. */
-    def derive(c: Int): Subset = deepRecursive:
+    /**
+     * Brzozowski derivative of `a` with respect to code point `c`. Wrapped with
+     * `stripStartAnchor`: whatever `rawDerive` returns represents "having consumed `c` from
+     * `a`", meaning at least one character has now been consumed *somewhere* in the whole
+     * match, so any `^`/`\A` reachable in that raw result — even one that was never itself
+     * touched by this step, e.g. because it sat untouched inside an undivided sibling — has to
+     * die. See `stripStartAnchor`'s doc for why this can't be handled locally the way `Look` is.
+     */
+    def derive(c: Int): Subset = stripStartAnchor(a.rawDerive(c))
+
+    private def rawDerive(c: Int): Subset = deepRecursive:
       a match
         case Eps | Empty => Empty
         case Chars(set) => if set.contains(c) then Eps else Empty
+        case StartAnchor => Empty
 
         /**
          * A leading lookahead can't be derived independently of what follows it - `Look(r,
@@ -160,6 +169,31 @@ object Subset:
     case Look(_, _) => true
     case Concat(a, _) => hasLeadingLook(a)
     case _ => false
+
+  /**
+   * Collapses every `^`/`\A` (`StartAnchor`) reachable in `r` to `Empty`. Applied
+   * unconditionally to the result of every `derive` call (see there): a derivative's result
+   * represents "having consumed a character", so `^`/`\A` can never hold in it again anywhere —
+   * even for an occurrence that this specific derivative step never itself touched, e.g. one
+   * left untouched inside an undivided sibling. That's why this can't be a local rule the way
+   * `Look`'s `Concat`-head handling is: `Look`'s continuation is threaded explicitly through the
+   * one node deriving it, but `^`/`\A` has to die *globally*, in parts of the tree the current
+   * derivative step never visits at all — a single recursive sweep over the whole result is the
+   * simplest way to guarantee that. `hasStartAnchor` keeps this a single cheap check (not a tree
+   * walk) for the overwhelming majority of patterns that never use `^`/`\A`.
+   */
+  private def stripStartAnchor(r: Regex): Regex =
+    if !r.hasStartAnchor then r
+    else
+      r match
+        case StartAnchor => Empty
+        case Concat(a, b) => stripStartAnchor(a).concat(stripStartAnchor(b))
+        case Alt(parts) => Regex.alt(parts.map(stripStartAnchor))
+        case Inter(parts) => Regex.inter(parts.map(stripStartAnchor))
+        case Star(inner) => stripStartAnchor(inner).star
+        case Compl(inner) => !stripStartAnchor(inner)
+        case Look(inner, positive) => Regex.lookahead(stripStartAnchor(inner), positive)
+        case _ => r
 
   /**
    * Returns one representative code point per equivalence class of the alphabet
