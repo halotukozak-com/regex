@@ -16,6 +16,14 @@ import scala.util.boundary.break
  * `a.subset(b)` decides whether `L(a) ⊆ L(b)` by checking emptiness of `a ∩ ¬b`.
  * Termination relies on smart-constructor normalization in [[Regex]] keeping the
  * derivative state set finite up to similarity.
+ *
+ * [[Regex.Group]] nodes never survive lifting into this type: `Subset.of` erases every one of them
+ * before the result is ever derived through (see that method's doc comment for why). That means
+ * every other function in this file can - and does - assume no `Group` ever reaches it, which
+ * matters specifically for `rawDerive`'s `Concat(Look(...), _)`/`Concat(Alt(...), _)`
+ * shape-matching special cases below: a `Group` wrapping a leading `Look` (e.g. `((?=a))a`)
+ * would otherwise have to be specifically unwrapped in each of those, on top of the ordinary
+ * generic-recursion handling every other node already gets for free.
  */
 opaque type Subset = Regex
 
@@ -38,8 +46,33 @@ final case class StateSpaceLimitExceeded(limit: Int):
 
 object Subset:
 
-  /** Lifts an existing [[Regex]] into [[Subset]]. */
-  def of(r: Regex): Subset = r
+  /**
+   * Lifts an existing [[Regex]] into [[Subset]], erasing every [[Regex.Group]] wrapper it
+   * contains along the way ([[Regex.Group]]'s own doc comment covers why that's a safe,
+   * language-preserving transform: `L(Group(_, _, inner)) = L(inner)` exactly). Capturing
+   * groups matter to code that walks a `Regex` tree directly (the parser, a future capture-span
+   * extractor) - they're invisible to every containment/matching question this type answers,
+   * so there's no reason for any of `rawDerive`/`stripStartAnchor`/`hasLeadingLook` below to
+   * know `Group` exists at all, and erasing here guarantees they never have to find out.
+   */
+  def of(r: Regex): Subset = eraseGroups(r)
+
+  /**
+   * See [[of]]. Plain structural recursion (not `deepRecursive`): unlike `derive`, this runs
+   * once per `of` call, not once per character of a match, so it's not on the per-derivative-
+   * step hot path `concat`/`derive` are - the same reasoning `nullable`/`alphabetBoundaries`
+   * (also plain recursion) already rely on.
+   */
+  private def eraseGroups(r: Regex): Regex = r match
+    case Eps | Empty | Chars(_) | StartAnchor => r
+    case Concat(a, b) => eraseGroups(a).concat(eraseGroups(b))
+    case Alt(parts) => Regex.alt(parts.map(eraseGroups))
+    case Inter(parts) => Regex.inter(parts.map(eraseGroups))
+    case Star(inner) => eraseGroups(inner).star
+    case Repeat(inner, lo, hi) => eraseGroups(inner).repeat(lo, hi)
+    case Compl(inner) => !eraseGroups(inner)
+    case Look(inner, positive) => Regex.lookahead(eraseGroups(inner), positive)
+    case Group(_, _, inner) => eraseGroups(inner)
 
   /** Parses a pattern into a [[Subset]]. */
   def parse(pattern: String): Either[RegexParseError, Subset] = RegexParser.parse(pattern).map(of)
@@ -178,6 +211,9 @@ object Subset:
         /** Zero-width: `L(Look(r, _)) ⊆ {ε}`, so no nonempty string can start it. */
         case Look(_, _) => Empty
 
+        /** Never reached: [[Subset.of]] erases every `Group` before anything reaches here. */
+        case g: Group => throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): $g")
+
   /**
    * Plain `@tailrec` loops, not `TailRec`-trampolined: unlike `deriveImpl`'s tree recursion
    * (whose depth tracks regex structure and needs the heap-based trampoline for stack
@@ -230,6 +266,8 @@ object Subset:
   private def hasLeadingLook(r: Regex): Boolean = r match
     case Look(_, _) => true
     case Concat(a, _) => hasLeadingLook(a)
+    case Group(_, _, _) =>
+      throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): $r")
     case _ => false
 
   /**
@@ -256,6 +294,7 @@ object Subset:
         case Repeat(inner, lo, hi) => stripStartAnchor(inner).repeat(lo, hi)
         case Compl(inner) => !stripStartAnchor(inner)
         case Look(inner, positive) => Regex.lookahead(stripStartAnchor(inner), positive)
+        case g: Group => throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): $g")
         case _ => r
 
   /**

@@ -73,6 +73,14 @@ class RegexInterpolatorTest extends munit.FunSuite:
     assertEquals(regex"(a(bc))+", RegexParser.parse("(a(bc))+").toOption.get)
   }
 
+  // Cross-checks the Group/groupNames side-table round-trip through RegexEncoder/RegexDecoder
+  // (see Regex.scala) specifically, not just the ordinary-node path "groups" above exercises -
+  // a named group is the one shape that needs the extra string side-table, not just an Int arg.
+  test("named groups round-trip through the compile-time ToExpr[Regex] encoding") {
+    assertEquals(regex"(?<x>a)(b)", RegexParser.parse("(?<x>a)(b)").toOption.get)
+    assertEquals(regex"(?<x>a)(b)", Regex.group(1, Some("x"), Regex.lit('a')).concat(Regex.group(2, None, Regex.lit('b'))))
+  }
+
   test("lookahead") {
     assertEquals(regex"(?=a)a", RegexParser.parse("(?=a)a").toOption.get)
     assertEquals(regex"(?!a)b", RegexParser.parse("(?!a)b").toOption.get)

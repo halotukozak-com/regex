@@ -3,6 +3,7 @@ package halotukozak.regex
 import halotukozak.regex.Regex.Eps
 
 import scala.annotation.{switch, tailrec}
+import scala.collection.mutable
 
 /** Reason a [[RegexParser.parse]] call did not produce a [[Regex]]. */
 sealed trait RegexParseError:
@@ -37,25 +38,38 @@ object RegexParseError:
  * [[UnicodeCategories]]; script/block properties are unsupported), `.`, char classes `[...]`
  * `[^...]` with ranges, nested shorthand escapes (`[\da-f]`), nested subclasses, and `&&`
  * intersection (`[a-z&&[^aeiou]]`) (`\b` inside a class means backspace, matching Java),
- * alternation `|`, groups `(...)` (capturing or `(?:...)`), lookahead `(?=...)` `(?!...)`, the
- * `i` inline flag `(?i)` `(?-i)` `(?i:...)` `(?-i:...)` (ASCII-only case folding, matching
- * Java's `CASE_INSENSITIVE` without `UNICODE_CASE`), quantifiers `*` `+` `?` `{n}` `{n,}`
- * `{n,m}` (bounds capped at [[Regex.maxRepeatBound]]), anchors `^` `$` `\A` `\Z` `\z`.
+ * alternation `|`, capturing groups `(...)`, named groups `(?<name>...)`, non-capturing groups
+ * `(?:...)`, lookahead `(?=...)` `(?!...)`, the `i` inline flag `(?i)` `(?-i)` `(?i:...)`
+ * `(?-i:...)` (ASCII-only case folding, matching Java's `CASE_INSENSITIVE` without
+ * `UNICODE_CASE`), quantifiers `*` `+` `?` `{n}` `{n,}` `{n,m}` (bounds capped at
+ * [[Regex.maxRepeatBound]]), anchors `^` `$` `\A` `\Z` `\z`.
+ *
+ * Capturing/named groups are recognized structurally (numbered/named correctly - see
+ * [[Regex.Group]]) but their captured spans aren't extractable yet - that's tracked
+ * separately, same as [[Regex]]'s own doc comment notes.
  *
  * Unsupported: word-boundary anchors `\b` `\B`, `\G`, lookbehind, backreferences
  * `\1`..`\9` `\k<name>` `\g{...}`, Unicode script/block properties (`\p{IsGreek}`,
- * `\p{InGreek}`, etc.), grapheme clusters `\X`, named groups, other inline flags (`(?m)`,
- * `(?s)`, `(?d)`, `(?u)`, `(?x)`, `(?U)`). Any other undefined letter escape (e.g. `\m`, `\y`,
- * `\q`) is rejected as invalid syntax, matching `java.util.regex.Pattern`'s own behavior.
+ * `\p{InGreek}`, etc.), grapheme clusters `\X`, other inline flags (`(?m)`, `(?s)`, `(?d)`,
+ * `(?u)`, `(?x)`, `(?U)`). Any other undefined letter escape (e.g. `\m`, `\y`, `\q`) is
+ * rejected as invalid syntax, matching `java.util.regex.Pattern`'s own behavior.
  */
 object RegexParser:
 
   private final class InvalidSyntaxSignal(val msg: String, val pos: Int) extends RuntimeException(msg)
   private final class UnsupportedSignal(val feature: String, val pos: Int) extends RuntimeException(feature)
 
-  /** What kind of group `(...)` a header (`?:`, `?=`, `?!`, `?i` &c., or none) introduced. */
+  /** What kind of group `(...)` a header (`?:`, `?=`, `?!`, `?i`, `?<name>` &c., or none) introduced. */
   private enum GroupKind:
+    /** `(?:...)`: grouping/precedence only, no capture - the only non-capturing kind. */
     case Plain
+
+    /** A bare `(...)`: capturing, numbered `index` (assigned left-to-right by opening paren). */
+    case Capturing(index: Int)
+
+    /** `(?<name>...)`: capturing, both by `index` and by `name` - see [[Regex.Group]]. */
+    case NamedCapturing(index: Int, name: String)
+
     case Look(positive: Boolean)
 
     /** `(?i)`/`(?-i)`: mutates the *enclosing* scope's flag state, not a scope of its own. */
@@ -158,6 +172,20 @@ object RegexParser:
      * `(a(?i)b)c` doesn't apply case-insensitivity to the `c` outside the group.
      */
     private var caseInsensitive: Boolean = false
+
+    /** Next 1-based capturing-group number to hand out - see [[GroupKind.Capturing]]. */
+    private var nextGroupIndex: Int = 1
+
+    /**
+     * Names already claimed by an earlier `(?<name>...)` in this pattern - Java requires
+     * every named group's name to be unique within the pattern.
+     */
+    private val usedGroupNames = mutable.Set.empty[String]
+
+    private def nextIndex(): Int =
+      val i = nextGroupIndex
+      nextGroupIndex += 1
+      i
 
     private def fail(msg: String): Nothing =
       throw new InvalidSyntaxSignal(msg, pos)
@@ -315,7 +343,7 @@ object RegexParser:
         if !eof && cur == '?' then
           pos += 1
           consumeGroupHeader()
-        else GroupKind.Plain
+        else GroupKind.Capturing(nextIndex())
       kind match
         // No save/restore here: unlike every other group kind, a bare `(?i)`/`(?-i)` isn't a
         // scope of its own - its body is always empty (`)` follows immediately) - it mutates
@@ -330,6 +358,16 @@ object RegexParser:
             val inner = parseAlt()
             expect(')')
             inner
+        case GroupKind.Capturing(index) =>
+          scoped:
+            val inner = parseAlt()
+            expect(')')
+            Regex.group(index, None, inner)
+        case GroupKind.NamedCapturing(index, name) =>
+          scoped:
+            val inner = parseAlt()
+            expect(')')
+            Regex.group(index, Some(name), inner)
         case GroupKind.Look(positive) =>
           scoped:
             val inner = parseAlt()
@@ -368,8 +406,28 @@ object RegexParser:
         case '<' =>
           pos += 1
           if !eof && (cur == '=' || cur == '!') then unsupported("lookbehind")
-          else unsupported("named group")
+          else
+            val name = parseGroupName()
+            GroupKind.NamedCapturing(nextIndex(), name)
         case _ => parseFlagGroupHeader()
+
+    /**
+     * `name>` following `(?<` (the `<` itself already consumed by the caller). Java requires
+     * `[a-zA-Z][a-zA-Z0-9]*`, unique within the whole pattern - both violations are
+     * `InvalidSyntax` (matching `java.util.regex.Pattern`'s own `PatternSyntaxException` for
+     * both), not `UnsupportedFeature`: the `(?<name>...)` form itself is fully supported, this
+     * specific name just isn't well-formed or available.
+     */
+    private def parseGroupName(): String =
+      val start = pos
+      while !eof && cur != '>' do pos += 1
+      if eof then fail(s"unterminated named group starting at position $start")
+      val name = src.substring(start, pos)
+      pos += 1
+      if name.isEmpty || !name.charAt(0).isLetter || !name.tail.forall(_.isLetterOrDigit) then
+        fail(s"""invalid group name "$name" at position $start""")
+      if !usedGroupNames.add(name) then fail(s"named capturing group <$name> is already defined")
+      name
 
     /**
      * `flags`, `flags-flags`, `:` or `)` following either - only `i` is a recognized flag

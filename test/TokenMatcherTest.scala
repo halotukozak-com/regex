@@ -270,3 +270,13 @@ class TokenMatcherTest extends munit.FunSuite:
     val combined = redosLike.concat(redosLike) | !redosLike
     assert(TokenMatcher.fromRegexesBounded(1_000)(redosLike, combined).isRight)
   }
+
+  // Capturing/named groups (Regex.Group) - erased the same way Subset.of erases them (see that
+  // method's doc comment), so a pattern using them matches identically to its non-capturing
+  // equivalent; matchAt itself never returns capture spans (see TokenMatcher's own doc comment).
+  test("patterns with capturing/named groups compile and match identically to the non-capturing equivalent") {
+    val withGroups = matcher("(if)", "(?<id>[a-zA-Z_][a-zA-Z0-9_]*)")
+    val withoutGroups = matcher("if", "[a-zA-Z_][a-zA-Z0-9_]*")
+    assertEquals(withGroups.matchAt("ifx", 0), withoutGroups.matchAt("ifx", 0))
+    assertEquals(withGroups.matchAt("if", 0), withoutGroups.matchAt("if", 0))
+  }

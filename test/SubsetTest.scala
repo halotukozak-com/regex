@@ -181,6 +181,40 @@ class SubsetTest extends munit.FunSuite:
     assertEquals(Subset.of(Eps).underlying, Eps)
   }
 
+  // Group erasure -----------------------------------------------------------
+
+  // `Subset.of` erases every `Regex.Group` wrapper before anything else in this file ever
+  // derives through it (see that method's doc comment) - capturing/named groups exist for
+  // parsing/numbering purposes, but are exactly as invisible to Subset as `(?:...)` is.
+
+  test("Subset.of erases a Group wrapper down to its inner Regex") {
+    val inner = Regex.literal("ab")
+    assertEquals(Subset.of(Regex.group(1, None, inner)).underlying, inner)
+    assertEquals(Subset.of(Regex.group(1, Some("x"), inner)).underlying, inner)
+  }
+
+  test("Subset.of erases nested Group wrappers, including inside Concat/Alt/Star") {
+    val a = Regex.lit('a')
+    val b = Regex.lit('b')
+    assertEquals(Subset.of(Regex.group(1, None, a).concat(Regex.group(2, None, b))).underlying, a.concat(b))
+    assertEquals(Subset.of(Regex.group(1, None, a | b)).underlying, a | b)
+    assertEquals(Subset.of(Regex.group(1, None, a).star).underlying, a.star)
+  }
+
+  test("capturing/named groups don't change Subset behavior - same underlying Regex as the non-capturing pattern") {
+    assertEquals(s("(a)b").underlying, s("ab").underlying)
+    assertEquals(s("(?<name>a)b").underlying, s("ab").underlying)
+    assertEquals(s("(a(bc))").underlying, s("abc").underlying)
+    assertEquals(s("(^a)*").underlying, s("(?:^a)*").underlying)
+  }
+
+  test("capturing groups don't change subset/isEmpty answers vs the non-capturing pattern") {
+    assert(s("(a)b").subset(s("ab")) && s("ab").subset(s("(a)b")))
+    assert(s("(a|b)*c").subset(s("(?:a|b)*c")) && s("(?:a|b)*c").subset(s("(a|b)*c")))
+    assert(!s("(a|b)*c").isEmpty)
+    assert(s(s("(a)").underlying & s("(b)").underlying).isEmpty)
+  }
+
   // isEmptyBounded / subsetBounded -----------------------------------------
 
   // Neither operand is a bare `Chars` node, so the smart constructors can't collapse this to
