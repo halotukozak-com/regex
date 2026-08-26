@@ -311,113 +311,80 @@ object Regex:
 
   // $COVERAGE-OFF$
   /**
-   * A pending step in [[ToExpr]]'s iterative post-order walk: index `node`'s children first
-   * (`Enter`), then, once they're all indexed, `node` itself (`Exit`).
-   */
-  private enum ExprBuildStep:
-    case Enter(node: Regex)
-    case Exit(node: Regex)
-
-  /**
-   * Per-node tag in the compact string [[ToExpr]] produces - plain (no `extends java.lang.Enum`)
-   * so it stays pure Scala, matching this file's own cross-platform (JVM/Scala.js/Scala Native)
-   * goal; `.ordinal`/`fromOrdinal` are all the round-trip needs, and nothing outside this file
-   * ever sees a `RegexTag` value, so there's no reason to take on a JVM-only Java-interop type.
+   * Per-node tag in the compact encoding [[RegexEncoder]]/[[RegexDecoder]] round-trip through -
+   * plain (no `extends java.lang.Enum`) so it stays pure Scala, matching this file's own
+   * cross-platform (JVM/Scala.js/Scala Native) goal; `.ordinal`/`fromOrdinal` are all the round
+   * trip needs, and nothing outside this file ever sees a `RegexTag` value, so there's no reason
+   * to take on a JVM-only Java-interop type.
    */
   private enum RegexTag:
     case Eps, Empty, Chars, Concat, Alt, Inter, Star, Compl, Look, StartAnchor, Repeat
 
   /**
-   * Reconstructs a `Regex` from the two compact strings [[ToExpr]] produces: `nodesPart` is a
-   * `,`-joined `tag,arg1,arg2,arg3` quadruple per node (nodes laid out so every child index is
-   * smaller than its parent's), and `partsFlatPart` is a `,`-joined flat list of [[Alt]]/[[Inter]]
-   * children indices. A single forward pass then builds each node from its already-built
-   * children, with no recursion at all on either side of this round trip.
+   * Encodes a `Regex` into the flat, compact form [[RegexDecoder]] reconstructs from - a pure
+   * function with no `Quotes`/macro dependency at all, unlike [[ToExpr]] below, which only needs
+   * one to splice the already-computed [[Encoded]] fields as literals. Keeping the traversal pure
+   * means it's exercisable (and unit-testable) exactly like any other function, with no
+   * `regex"..."` call or macro-expansion context required.
    *
-   * `arg1`/`arg2`/`arg3` are reused across tags rather than given one array per case, since at
-   * most three ints are ever needed per node:
-   *  - [[Concat]]: `arg1`/`arg2` = index of `a`/`b`.
-   *  - [[Star]]/[[Compl]]: `arg1` = index of the inner `r`.
-   *  - [[Look]]: `arg1` = index of `r`; `arg2` = `positive` as `0`/`1`.
-   *  - [[Repeat]]: `arg1` = index of `r`; `arg2`/`arg3` = `lo`/`hi`.
-   *  - [[Chars]]: `arg1` = index into `charSets`.
-   *  - [[Alt]]/[[Inter]]: `arg1`/`arg2` = offset/count of this node's children within `partsFlat`.
-   *
-   * Strings, not the five parallel `Array[Int]` literals an earlier version of this used, because
-   * each element of an embedded array literal costs its own `dup`/`ldc`/`iastore` bytecode
-   * instructions - enough of them (e.g. from a long literal string; see [[ToExpr]]) hits the
-   * JVM's 64KB-per-method bytecode ceiling. A string constant is one `ldc` regardless of length,
-   * so the call site's bytecode size no longer scales with the source pattern's size at all; the
-   * only remaining limit is the classfile format's 65535-byte cap on a single constant. Two
-   * strings rather than one joined by a delimiter, since there's already an unambiguous split
-   * between them (a fixed parameter each) - no delimiter to pick or reparse.
+   * Splicing raw constructor calls one-per-node instead (an earlier version of this did) isn't
+   * enough on its own: `regex"..."` on a pattern producing a sufficiently deep tree - not just
+   * from a `{lo,hi}` quantifier (see [[Repeat]], which now keeps those O(1)), but e.g. from a
+   * long literal string, since [[literal]] still builds one [[Concat]] node per character - can
+   * `StackOverflowError` the *compiler itself* while it walks that many levels of nested calls in
+   * a later phase (macro splicing, inlining), regardless of how carefully the splicing macro
+   * itself was written. [[Encoded]] is flat data, embedded as a single call with no nesting, so
+   * no compiler pass has a deep tree to walk no matter how deep the source `Regex` is.
    */
-  private[regex] def fromEncoded(nodesPart: String, partsFlatPart: String, charSets: IndexedSeq[CharSet]): Regex =
-    val nodeInts = nodesPart.split(',').map(_.toInt)
-    val partsFlat = if partsFlatPart.isEmpty then Array.empty[Int] else partsFlatPart.split(',').map(_.toInt)
+  private[regex] object RegexEncoder:
 
-    val n = nodeInts.length / 4
-    val nodes = new Array[Regex](n)
-    var i = 0
-    while i < n do
-      val arg1 = nodeInts(i * 4 + 1)
-      val arg2 = nodeInts(i * 4 + 2)
-      val arg3 = nodeInts(i * 4 + 3)
-      nodes(i) = RegexTag.fromOrdinal(nodeInts(i * 4)) match
-        case RegexTag.Eps => Eps
-        case RegexTag.Empty => Empty
-        case RegexTag.StartAnchor => StartAnchor
-        case RegexTag.Chars => Chars(charSets(arg1))
-        case RegexTag.Concat => Concat(nodes(arg1), nodes(arg2))
-        case RegexTag.Star => Star(nodes(arg1))
-        case RegexTag.Compl => Compl(nodes(arg1))
-        case RegexTag.Look => Look(nodes(arg1), arg2 != 0)
-        case RegexTag.Repeat => Repeat(nodes(arg1), arg2, arg3)
-        case tag @ (RegexTag.Alt | RegexTag.Inter) =>
-          var parts = Set.empty[Regex]
-          var k = 0
-          while k < arg2 do
-            parts += nodes(partsFlat(arg1 + k))
-            k += 1
-          if tag == RegexTag.Alt then Alt(parts) else Inter(parts)
-      i += 1
-    nodes(n - 1)
+    /**
+     * `nodesPart`: `,`-joined `tag,arg1,arg2,arg3` quadruple per node (nodes laid out so every
+     * child index is smaller than its parent's). `partsFlatPart`: `,`-joined flat list of
+     * [[Alt]]/[[Inter]] children indices. `charSets`: one entry per distinct [[Chars]] leaf, in
+     * encounter order.
+     *
+     * `arg1`/`arg2`/`arg3` are reused across tags rather than given one field per case, since at
+     * most three ints are ever needed per node:
+     *  - [[Concat]]: `arg1`/`arg2` = index of `a`/`b`.
+     *  - [[Star]]/[[Compl]]: `arg1` = index of the inner `r`.
+     *  - [[Look]]: `arg1` = index of `r`; `arg2` = `positive` as `0`/`1`.
+     *  - [[Repeat]]: `arg1` = index of `r`; `arg2`/`arg3` = `lo`/`hi`.
+     *  - [[Chars]]: `arg1` = index into `charSets`.
+     *  - [[Alt]]/[[Inter]]: `arg1`/`arg2` = offset/count of this node's children within `partsFlat`.
+     *
+     * Two strings, not one joined by a delimiter: there's already an unambiguous split between
+     * them (a field each), so there's no delimiter to pick or reparse. And strings at all, not
+     * the five parallel `Array[Int]` literals an earlier version of this used, because each
+     * element of an embedded array literal costs its own `dup`/`ldc`/`iastore` bytecode
+     * instructions - enough of them (e.g. from a long literal string) hits the JVM's
+     * 64KB-per-method bytecode ceiling at the `regex"..."` call site. A string constant is one
+     * `ldc` regardless of length, so that call site's bytecode size no longer scales with the
+     * source pattern's size at all; the only remaining limit is the classfile format's
+     * 65535-byte cap on a single constant.
+     */
+    final case class Encoded(nodesPart: String, partsFlatPart: String, charSets: IndexedSeq[CharSet])
 
-  /**
-   * Embeds the value's already-computed shape as a compact string reconstructed by
-   * [[fromEncoded]], instead of regenerating it through the public smart constructors (`concat`,
-   * `alt`, `inter`, `star`, `unary_!`, `lookahead`) at every call site - the same spirit as
-   * [[TokenMatcher]]'s `ToExpr` embedding its DFA tables as plain data. The smart constructors
-   * exist to (re-)establish ACI normalization and merge `Chars` sets when building a tree from
-   * scratch; a `Regex` value reaching this `given` is already normalized, so re-running them at
-   * every macro call site - and again at every class load, since the generated code re-executes
-   * them - would just redo that work for a result that's already known.
-   *
-   * Splicing raw constructor calls one-per-node instead (as an earlier version of this `given`
-   * did) still isn't enough on its own: `regex"..."` on a pattern producing a sufficiently deep
-   * tree - not just from a `{lo,hi}` quantifier (see [[Repeat]], which now keeps those O(1)), but
-   * e.g. from a long literal string, since [[literal]] still builds one [[Concat]] node per
-   * character - can `StackOverflowError` the *compiler itself* while it walks that many levels
-   * of nested calls in a later phase (macro splicing, inlining), regardless of how carefully
-   * *this* macro was written. Embedding as a single string is a single call with no nesting, so
-   * no compiler pass has a deep tree to walk no matter how deep the source `Regex` is - see
-   * [[fromEncoded]] for why a string beats parallel `Array[Int]` literals for that same call
-   * site's own bytecode size, which was still an (orthogonal, JVM-classfile-level) limit on a
-   * long enough pattern even after this fix's first version closed the stack-overflow.
-   *
-   * Both directions avoid recursion entirely: encoding below walks the tree with an explicit
-   * `steps` stack (needed because, unlike [[halotukozak.commons.deepRecursive]]-trampolined
-   * `concat`/`derive`, [[Alt]]/[[Inter]] recurse into a `Set` of unbounded size, which that
-   * machinery can't unroll), and [[fromEncoded]]'s reconstruction is a single forward loop.
-   *
-   * `index` doubles as a dedup cache: a subtree reachable from multiple places in the tree (e.g.
-   * a repeated alternative) is encoded, and later reconstructed, only once.
-   */
-  given ToExpr[Regex]:
-    def apply(r: Regex)(using Quotes): Expr[Regex] =
-      import ExprBuildStep.*
+    /**
+     * A pending step in the iterative post-order walk: index `node`'s children first (`Enter`),
+     * then, once they're all indexed, `node` itself (`Exit`). Explicit, rather than plain
+     * recursion or [[halotukozak.commons.deepRecursive]] (which trampolines `concat`/`derive`),
+     * because [[Alt]]/[[Inter]] recurse into a `Set` of unbounded size, which that machinery
+     * can't unroll - and ordinary recursion here would risk overflowing the *compiler's* stack
+     * while expanding `regex"..."` on a deep pattern.
+     */
+    private enum Step:
+      case Enter(node: Regex)
+      case Exit(node: Regex)
+
+    /**
+     * `index` doubles as a dedup cache: a subtree reachable from multiple places in the tree
+     * (e.g. a repeated alternative) is encoded only once.
+     */
+    def encode(r: Regex): Encoded =
+      import Step.*
       val index = mutable.Map.empty[Regex, Int]
-      val tags = mutable.ArrayBuffer.empty[Int]
+      val tags = mutable.ArrayBuffer.empty[RegexTag]
       val arg1 = mutable.ArrayBuffer.empty[Int]
       val arg2 = mutable.ArrayBuffer.empty[Int]
       val arg3 = mutable.ArrayBuffer.empty[Int]
@@ -427,7 +394,7 @@ object Regex:
 
       def push(tag: RegexTag, a: Int, b: Int, c: Int): Int =
         val idx = tags.length
-        tags += tag.ordinal
+        tags += tag
         arg1 += a
         arg2 += b
         arg3 += c
@@ -488,11 +455,69 @@ object Regex:
 
       val nodesPart = Iterator
         .range(0, tags.length)
-        .flatMap(i => Iterator(tags(i), arg1(i), arg2(i), arg3(i)))
+        .flatMap(i => Iterator(tags(i).ordinal, arg1(i), arg2(i), arg3(i)))
         .mkString(",")
-      val partsFlatPart = partsFlat.mkString(",")
-      val charSetsExpr = Varargs(charSets.toSeq.map(Expr(_)))
-      '{ Regex.fromEncoded(${ Expr(nodesPart) }, ${ Expr(partsFlatPart) }, IndexedSeq($charSetsExpr*)) }
+      Encoded(nodesPart, partsFlat.mkString(","), charSets.toIndexedSeq)
+
+  /**
+   * Reconstructs a `Regex` from an [[RegexEncoder.Encoded]] value: a single forward pass builds
+   * each node from its already-built children, with no recursion at all - the counterpart to
+   * [[RegexEncoder]]'s iterative encode, and, like it, a pure function with no macro dependency.
+   */
+  private[regex] object RegexDecoder:
+    def decode(nodesPart: String, partsFlatPart: String, charSets: IndexedSeq[CharSet]): Regex =
+      val nodeInts = nodesPart.split(',').map(_.toInt)
+      val partsFlat = if partsFlatPart.isEmpty then Array.empty[Int] else partsFlatPart.split(',').map(_.toInt)
+
+      val n = nodeInts.length / 4
+      val nodes = new Array[Regex](n)
+      var i = 0
+      while i < n do
+        val arg1 = nodeInts(i * 4 + 1)
+        val arg2 = nodeInts(i * 4 + 2)
+        val arg3 = nodeInts(i * 4 + 3)
+        nodes(i) = RegexTag.fromOrdinal(nodeInts(i * 4)) match
+          case RegexTag.Eps => Eps
+          case RegexTag.Empty => Empty
+          case RegexTag.StartAnchor => StartAnchor
+          case RegexTag.Chars => Chars(charSets(arg1))
+          case RegexTag.Concat => Concat(nodes(arg1), nodes(arg2))
+          case RegexTag.Star => Star(nodes(arg1))
+          case RegexTag.Compl => Compl(nodes(arg1))
+          case RegexTag.Look => Look(nodes(arg1), arg2 != 0)
+          case RegexTag.Repeat => Repeat(nodes(arg1), arg2, arg3)
+          case tag @ (RegexTag.Alt | RegexTag.Inter) =>
+            var parts = Set.empty[Regex]
+            var k = 0
+            while k < arg2 do
+              parts += nodes(partsFlat(arg1 + k))
+              k += 1
+            if tag == RegexTag.Alt then Alt(parts) else Inter(parts)
+        i += 1
+      nodes(n - 1)
+
+  /**
+   * Embeds the value's already-computed [[RegexEncoder.Encoded]] shape, reconstructed by
+   * [[RegexDecoder]], instead of regenerating it through the public smart constructors (`concat`,
+   * `alt`, `inter`, `star`, `unary_!`, `lookahead`) at every call site - the same spirit as
+   * [[TokenMatcher]]'s `ToExpr` embedding its DFA tables as plain data. The smart constructors
+   * exist to (re-)establish ACI normalization and merge `Chars` sets when building a tree from
+   * scratch; a `Regex` value reaching this `given` is already normalized, so re-running them at
+   * every macro call site - and again at every class load, since the generated code re-executes
+   * them - would just redo that work for a result that's already known. See [[RegexEncoder]] for
+   * why the encoding is flat data rather than nested constructor calls.
+   */
+  given ToExpr[Regex]:
+    def apply(r: Regex)(using Quotes): Expr[Regex] =
+      val encoded = RegexEncoder.encode(r)
+      val charSetsExpr = Varargs(encoded.charSets.toSeq.map(Expr(_)))
+      '{
+        Regex.RegexDecoder.decode(
+          ${ Expr(encoded.nodesPart) },
+          ${ Expr(encoded.partsFlatPart) },
+          IndexedSeq($charSetsExpr*),
+        )
+      }
   // $COVERAGE-ON$
 
 extension [A, CC[X] <: Iterable[X]](xs: scala.collection.IterableOps[A, CC, CC[A]])
