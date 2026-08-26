@@ -71,6 +71,12 @@ private def tokenMatcherImpl(patternsExpr: Expr[Seq[String]])(using quotes: Quot
  *
  * `accept(state)` is the lowest pattern index nullable in that state, or `-1` if none is.
  *
+ * A pattern containing [[Regex.Group]] nodes (capturing/named groups) compiles fine - they're
+ * erased the same way [[Subset.of]] erases them for containment checks (`fromRegexes`/
+ * `fromSubsets` go through `Subset.of` too) - but `matchAt`/`findFirst` never return capture
+ * spans; this DFA only ever tracks priority/end position. Wiring captures into the compiled
+ * automaton is separate, not-yet-done work.
+ *
  * Constructor kept private - the only place that ever builds one directly is `compile` below,
  * in the companion object; `@publicInBinary` exists solely so `given ToExpr[TokenMatcher]`'s
  * quoted call to it still resolves once that quote is spliced into a different compilation

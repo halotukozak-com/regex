@@ -54,9 +54,14 @@ private def regexInterpolatorImpl(scExpr: Expr[StringContext])(using quotes: Quo
  * \x{h...h} \uhhhh \Q...\E \R and meta-escapes), Unicode property escapes `\p{...}` `\P{...}`
  * (general categories and ASCII-only POSIX classes; see [[UnicodeCategories]]), character
  * classes (including ranges, negation, nested subclasses, and `&&` intersection), `.`,
- * alternation `|`, non-capturing-style groups `(...)`, lookahead `(?=...)` `(?!...)`, the `i`
- * inline flag `(?i)` `(?-i)` `(?i:...)` `(?-i:...)`, anchors `^` `$` `\A` `\Z` `\z`, quantifiers
- * `*` `+` `?` `{n}` `{n,}` `{n,m}` (bounds capped at [[Regex.maxRepeatBound]]).
+ * alternation `|`, capturing groups `(...)`, named groups `(?<name>...)`, non-capturing groups
+ * `(?:...)`, lookahead `(?=...)` `(?!...)`, the `i` inline flag `(?i)` `(?-i)` `(?i:...)`
+ * `(?-i:...)`, anchors `^` `$` `\A` `\Z` `\z`, quantifiers `*` `+` `?` `{n}` `{n,}` `{n,m}`
+ * (bounds capped at [[Regex.maxRepeatBound]]).
+ *
+ * Capturing groups are recognized structurally (numbered/named correctly, and fully
+ * transparent to every containment/matching operation - see [[Regex.Group]] and [[Subset]]'s
+ * doc comment) but their captured spans aren't extractable yet - that's tracked separately.
  *
  * Unsupported (parser returns [[RegexParseError.UnsupportedFeature]]):
  * word-boundary anchors `\b` `\B`, `\G`, lookbehind `(?<=` `(?<!`,
@@ -118,6 +123,23 @@ enum Regex:
   case StartAnchor
 
   /**
+   * Capturing group `(...)` / named group `(?<name>...)`. Purely a marker for *where* a
+   * capture begins and ends - `L(Group(_, _, inner)) = L(inner)` exactly, and every operation
+   * in this file (`nullable`, `alphabetBoundaries`, `hasStartAnchor`, and every smart
+   * constructor) treats it as fully transparent, recursing straight through to `inner`.
+   * [[Subset]] goes one step further and erases every `Group` node outright before ever
+   * deriving through it (see that file's doc comment for why) - so this node only matters to
+   * code that walks a `Regex` tree directly looking for where groups are, not to anything
+   * answering a containment/matching question through [[Subset]].
+   *
+   * `index` is the group's 1-based number, assigned left-to-right by opening paren (0 is
+   * reserved for "the whole match", which isn't its own node); `name` is `Some` for
+   * `(?<name>...)`, `None` for a bare `(...)`. `(?:...)` (explicitly non-capturing) produces no
+   * `Group` node at all, same as today.
+   */
+  case Group private[Regex] (index: Int, name: Option[String], inner: Regex)
+
+  /**
    * Cached: this tree is immutable and gets hashed repeatedly by the `Set`-based ACI
    * normalization in `Regex.alt`/`Regex.inter` and by the visited-state set driving
    * Brzozowski derivative exploration in [[Subset]] — recomputing structurally every time
@@ -142,6 +164,7 @@ enum Regex:
     case Compl(inner) => !inner.nullable
     case Look(r, positive) => if positive then r.nullable else !r.nullable
     case StartAnchor => true
+    case Group(_, _, inner) => inner.nullable
 
   /**
    * Cached: sorted boundary points (range starts, and one-past-the-end of range ends) of
@@ -163,6 +186,7 @@ enum Regex:
     case Compl(inner) => inner.alphabetBoundaries
     case Look(r, _) => r.alphabetBoundaries
     case StartAnchor => SortedSet.empty
+    case Group(_, _, inner) => inner.alphabetBoundaries
 
   /**
    * Cached: `true` iff `^`/`\A` occurs anywhere in this tree, including inside [[Look]] bodies
@@ -181,6 +205,7 @@ enum Regex:
     case Repeat(inner, _, _) => inner.hasStartAnchor
     case Compl(inner) => inner.hasStartAnchor
     case Look(r, _) => r.hasStartAnchor
+    case Group(_, _, inner) => inner.hasStartAnchor
 
   /** Alternation: `this | other`. */
   infix def |(other: Regex): Regex = Regex.alt(Set(this, other))
@@ -296,6 +321,14 @@ object Regex:
     case Eps => if positive then Eps else Empty
     case _ => Look(r, positive)
 
+  /**
+   * Smart constructor for a capturing group node - see [[Regex.Group]]. Unlike [[lookahead]]/
+   * `star`/etc., this never collapses even when `inner` is [[Eps]]/[[Empty]]: the group's
+   * identity (its index/name existing at all) matters regardless of what it can match, e.g.
+   * `(a?)` is still a real, numbered group even though it can capture the empty string.
+   */
+  def group(index: Int, name: Option[String], inner: Regex): Regex = Group(index, name, inner)
+
   /** All-strings regex `Σ*`. */
   val all: Regex = Regex(CharSet.all).star
 
@@ -319,7 +352,7 @@ object Regex:
    * to take on a JVM-only Java-interop type.
    */
   private enum RegexTag:
-    case Eps, Empty, Chars, Concat, Alt, Inter, Star, Compl, Look, StartAnchor, Repeat
+    case Eps, Empty, Chars, Concat, Alt, Inter, Star, Compl, Look, StartAnchor, Repeat, Group
 
   /**
    * Encodes a `Regex` into the flat, compact form [[RegexDecoder]] reconstructs from - a pure
@@ -353,6 +386,9 @@ object Regex:
      *  - [[Repeat]]: `arg1` = index of `r`; `arg2`/`arg3` = `lo`/`hi`.
      *  - [[Chars]]: `arg1` = index into `charSets`.
      *  - [[Alt]]/[[Inter]]: `arg1`/`arg2` = offset/count of this node's children within `partsFlat`.
+     *  - [[Group]]: `arg1` = index of `inner`; `arg2` = the group's own numeric index; `arg3` =
+     *    index into `groupNames` if named, `-1` if not (mirrors [[Chars]]'s `charSets` side-table
+     *    - a group name is a `String`, which doesn't fit the three-`Int` scheme any other way).
      *
      * Two strings, not one joined by a delimiter: there's already an unambiguous split between
      * them (a field each), so there's no delimiter to pick or reparse. And strings at all, not
@@ -364,7 +400,12 @@ object Regex:
      * source pattern's size at all; the only remaining limit is the classfile format's
      * 65535-byte cap on a single constant.
      */
-    final case class Encoded(nodesPart: String, partsFlatPart: String, charSets: IndexedSeq[CharSet])
+    final case class Encoded(
+      nodesPart: String,
+      partsFlatPart: String,
+      charSets: IndexedSeq[CharSet],
+      groupNames: IndexedSeq[String],
+    )
 
     /**
      * A pending step in the iterative post-order walk: index `node`'s children first (`Enter`),
@@ -391,6 +432,7 @@ object Regex:
       val arg3 = mutable.ArrayBuffer.empty[Int]
       val partsFlat = mutable.ArrayBuffer.empty[Int]
       val charSets = mutable.ArrayBuffer.empty[CharSet]
+      val groupNames = mutable.ArrayBuffer.empty[String]
       val steps = mutable.ArrayDeque(Enter(r))
 
       def push(tag: RegexTag, a: Int, b: Int, c: Int): Int =
@@ -431,6 +473,9 @@ object Regex:
               case Look(inner, _) =>
                 steps += Exit(node)
                 enter(inner)
+              case Group(_, _, inner) =>
+                steps += Exit(node)
+                enter(inner)
               case Alt(parts) =>
                 steps += Exit(node)
                 parts.foreach(enter)
@@ -444,6 +489,14 @@ object Regex:
               case Repeat(inner, lo, hi) => push(RegexTag.Repeat, index(inner), lo, hi)
               case Compl(inner) => push(RegexTag.Compl, index(inner), 0, 0)
               case Look(inner, positive) => push(RegexTag.Look, index(inner), if positive then 1 else 0, 0)
+              case Group(groupIndex, name, inner) =>
+                val nameIdx = name match
+                  case Some(n) =>
+                    val i = groupNames.length
+                    groupNames += n
+                    i
+                  case None => -1
+                push(RegexTag.Group, index(inner), groupIndex, nameIdx)
               case Alt(parts) =>
                 val off = partsFlat.length
                 parts.foreach(p => partsFlat += index(p))
@@ -458,7 +511,7 @@ object Regex:
         .range(0, tags.length)
         .flatMap(i => Iterator(tags(i).ordinal, arg1(i), arg2(i), arg3(i)))
         .mkString(",")
-      Encoded(nodesPart, partsFlat.mkString(","), charSets.toIndexedSeq)
+      Encoded(nodesPart, partsFlat.mkString(","), charSets.toIndexedSeq, groupNames.toIndexedSeq)
 
   /**
    * Reconstructs a `Regex` from an [[RegexEncoder.Encoded]] value: a single forward pass builds
@@ -466,7 +519,12 @@ object Regex:
    * [[RegexEncoder]]'s iterative encode, and, like it, a pure function with no macro dependency.
    */
   private[regex] object RegexDecoder:
-    def decode(nodesPart: String, partsFlatPart: String, charSets: IndexedSeq[CharSet]): Regex =
+    def decode(
+      nodesPart: String,
+      partsFlatPart: String,
+      charSets: IndexedSeq[CharSet],
+      groupNames: IndexedSeq[String],
+    ): Regex =
       val nodeInts = nodesPart.split(',').map(_.toInt)
       val partsFlat = if partsFlatPart.isEmpty then Array.empty[Int] else partsFlatPart.split(',').map(_.toInt)
 
@@ -486,6 +544,7 @@ object Regex:
           case RegexTag.Compl => Compl(nodes(arg1))
           case RegexTag.Look => Look(nodes(arg1), arg2 != 0)
           case RegexTag.Repeat => Repeat(nodes(arg1), arg2, arg3)
+          case RegexTag.Group => Group(arg2, if arg3 < 0 then None else Some(groupNames(arg3)), nodes(arg1))
           case tag @ (RegexTag.Alt | RegexTag.Inter) =>
             val parts = (arg1 until arg1 + arg2).map(idx => nodes(partsFlat(idx))).toSet
             if tag == RegexTag.Alt then Alt(parts) else Inter(parts)
@@ -507,11 +566,13 @@ object Regex:
     def apply(r: Regex)(using Quotes): Expr[Regex] =
       val encoded = RegexEncoder.encode(r)
       val charSetsExpr = Varargs(encoded.charSets.toSeq.map(Expr(_)))
+      val groupNamesExpr = Varargs(encoded.groupNames.toSeq.map(Expr(_)))
       '{
         Regex.RegexDecoder.decode(
           ${ Expr(encoded.nodesPart) },
           ${ Expr(encoded.partsFlatPart) },
           IndexedSeq($charSetsExpr*),
+          IndexedSeq($groupNamesExpr*),
         )
       }
   // $COVERAGE-ON$

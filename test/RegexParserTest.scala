@@ -86,11 +86,44 @@ class RegexParserTest extends munit.FunSuite:
   }
 
   test("parses group") {
-    assertEquals(parse("(ab)"), Regex.literal("ab"))
+    assertEquals(parse("(ab)"), Regex.group(1, None, Regex.literal("ab")))
   }
 
   test("parses non-capturing group") {
     assertEquals(parse("(?:ab)"), Regex.literal("ab"))
+  }
+
+  test("parses named group") {
+    assertEquals(parse("(?<name>ab)"), Regex.group(1, Some("name"), Regex.literal("ab")))
+  }
+
+  test("assigns group indices left-to-right by opening paren, mixing named and unnamed") {
+    assertEquals(
+      parse("(a)(?<b>c)(d)"),
+      Regex
+        .group(1, None, Regex.lit('a'))
+        .concat(Regex.group(2, Some("b"), Regex.lit('c')))
+        .concat(Regex.group(3, None, Regex.lit('d'))),
+    )
+  }
+
+  test("a non-capturing group doesn't consume a group index, even nested inside a capturing one") {
+    assertEquals(
+      parse("((?:a)b)"),
+      Regex.group(1, None, Regex.literal("ab")),
+    )
+    assertEquals(parse("(a)(b)"), Regex.group(1, None, Regex.lit('a')).concat(Regex.group(2, None, Regex.lit('b'))))
+  }
+
+  test("rejects invalid group name syntax") {
+    assertInvalidSyntax(RegexParser.parse("(?<1abc>x)"))
+    assertInvalidSyntax(RegexParser.parse("(?<>x)"))
+    assertInvalidSyntax(RegexParser.parse("(?<na-me>x)"))
+    assertInvalidSyntax(RegexParser.parse("(?<name"))
+  }
+
+  test("rejects a duplicate group name") {
+    assertInvalidSyntax(RegexParser.parse("(?<dup>a)(?<dup>b)"))
   }
 
   test("parses escapes") {
@@ -164,17 +197,18 @@ class RegexParserTest extends munit.FunSuite:
     assertInvalidSyntax(RegexParser.parse("(abc"))
   }
 
-  test("parses nested groups") {
-    assertEquals(parse("(a(bc))"), Regex.literal("abc"))
+  test("parses nested groups, numbered left-to-right by opening paren") {
+    val inner = Regex.group(2, None, Regex.literal("bc"))
+    assertEquals(parse("(a(bc))"), Regex.group(1, None, Regex.lit('a').concat(inner)))
   }
 
   test("parses alternation inside groups") {
-    assertEquals(parse("(a|b)"), Regex.lit('a') | Regex.lit('b'))
+    assertEquals(parse("(a|b)"), Regex.group(1, None, Regex.lit('a') | Regex.lit('b')))
   }
 
   test("parses quantified group") {
-    val ab = Regex.literal("ab")
-    assertEquals(parse("(ab)+"), ab.concat(ab.star))
+    val g = Regex.group(1, None, Regex.literal("ab"))
+    assertEquals(parse("(ab)+"), g.concat(g.star))
   }
 
   test("parses bounded {n,m} repetition") {

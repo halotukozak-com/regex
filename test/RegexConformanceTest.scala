@@ -7,10 +7,11 @@ package halotukozak.regex
  * original test code itself.
  *
  * Cases exercising features this engine intentionally doesn't support (lookbehind,
- * backreferences, named groups, or a Matcher-style find/replace/split API this engine never
- * had) are `ignore`d with a `TODO` rather than deleted, so the gap stays visible instead of
- * silently disappearing. Lookahead and POSIX/Unicode property classes are both supported, so
- * those cases run for real.
+ * backreferences, or a Matcher-style find/replace/split API this engine never had) are
+ * `ignore`d with a `TODO` rather than deleted, so the gap stays visible instead of silently
+ * disappearing. Lookahead, POSIX/Unicode property classes, and capturing/named groups (see
+ * [[Regex.Group]] - captured *spans* aren't extractable yet, but parsing/numbering/naming is
+ * fully supported) all run for real.
  */
 class RegexConformanceTest extends munit.FunSuite:
 
@@ -25,10 +26,6 @@ class RegexConformanceTest extends munit.FunSuite:
   private def assertInvalidSyntax(result: Either[RegexParseError, Regex]): Unit = result match
     case Left(_: RegexParseError.InvalidSyntax) => ()
     case other => fail(s"expected InvalidSyntax, got $other")
-
-  private def assertUnsupported(result: Either[RegexParseError, Regex]): Unit = result match
-    case Left(_: RegexParseError.UnsupportedFeature) => ()
-    case other => fail(s"expected UnsupportedFeature, got $other")
 
   /**
    * Decodes a UTF-16 string into full Unicode code points, combining surrogate pairs.
@@ -146,7 +143,8 @@ class RegexConformanceTest extends munit.FunSuite:
 
   test(
     ("kotlin: named group + \\k<name> backreference (matchNamedGroupsWithBackReference)" +
-      " - TODO: unsupported, no capture groups or backreferences at all").ignore,
+      " - TODO: named groups now parse (see Regex.Group), but \\k<name> backreferences are" +
+      " still unsupported - that's the remaining blocker here").ignore,
   ) {
     assert(matches("(?<title>\\w+), yes \\k<title>", "Sir, yes Sir"))
   }
@@ -248,8 +246,8 @@ class RegexConformanceTest extends munit.FunSuite:
     assert(equiv("\\Q|\\E", "\\|"))
   }
 
-  test("dregex: named group rejected as unsupported (testGrouping)") {
-    assertUnsupported(RegexParser.parse("(?<name>abc)"))
+  test("dregex: named group parses, equivalent in language to its unnamed body (testGrouping)") {
+    assert(equiv("(?<name>abc)", "abc"))
   }
 
   test("dregex: lookaround equivalences (testLookaround)") {
