@@ -38,9 +38,12 @@ jobs:
       - name: Run tests
         # Coverage is recorded only for production sources; tests were previously
         # measured as 100%-covered and inflated the reported number. bench/ is excluded
-        # because it only compiles under `--jmh` (see the benchmark job below).
+        # because it only compiles under `--jmh` (see the benchmark job below); scripts/ is
+        # excluded because it's one-off codegen (see scripts/GenUnicodeCategories.scala) that
+        # calls JVM-only APIs the library's own sources may never depend on, and would
+        # otherwise skew the coverage percentage since nothing exercises it in tests.
         run: >
-          scala-cli --power test . --exclude "bench/**"
+          scala-cli --power test . --exclude "bench/**" --exclude "scripts/**"
           -O -coverage-out:./.scoverage -O '-coverage-exclude-files:.*test/.*'
       - name: Generate coverage
         run: scala-cli .scoverage/report.sc
@@ -50,7 +53,7 @@ jobs:
           files: .scoverage/report/cobertura.xml
           token: ${{ secrets.CODECOV_TOKEN }}
       - name: Test documentation
-        run: scala-cli --power doc . --exclude "bench/**"
+        run: scala-cli --power doc . --exclude "bench/**" --exclude "scripts/**"
 
   compile:
     name: Compile (${{ matrix.platform }})
@@ -78,7 +81,9 @@ jobs:
             scala-build-${{ matrix.platform }}-
       - uses: VirtusLab/scala-cli-setup@v1
       - name: Compile
-        run: scala-cli --power compile . --exclude "bench/**" --platform ${{ matrix.platform }} ${{ matrix.args }}
+        run: >
+          scala-cli --power compile . --exclude "bench/**" --exclude "scripts/**"
+          --platform ${{ matrix.platform }} ${{ matrix.args }}
 
   # JVM is covered by the `test` job above (with coverage/docs); this just runs
   # the same suite on the other targets to catch platform-specific regressions.
@@ -106,7 +111,9 @@ jobs:
             scala-build-${{ matrix.platform }}-
       - uses: VirtusLab/scala-cli-setup@v1
       - name: Run tests
-        run: scala-cli --power test . --exclude "bench/**" --platform ${{ matrix.platform }} ${{ matrix.args }}
+        run: >
+          scala-cli --power test . --exclude "bench/**" --exclude "scripts/**"
+          --platform ${{ matrix.platform }} ${{ matrix.args }}
 
   # Runs the JMH suite in bench/ against both the PR branch and main, on the same runner
   # back-to-back, then diffs the two result sets. Informational only (see the note the
@@ -126,7 +133,7 @@ jobs:
       - uses: VirtusLab/scala-cli-setup@v1
       - name: Run benchmarks on current branch
         run: >
-          scala-cli --power run --jmh . --exclude "test/**" --
+          scala-cli --power run --jmh . --exclude "test/**" --exclude "scripts/**" --
           -f 1 -wi 3 -i 5 -w 300ms -r 300ms -rf json -rff "$GITHUB_WORKSPACE/current-bench.json"
       - name: Run benchmarks on main
         # Reuses the PR's bench/ harness (and project.scala, for identical compiler
@@ -137,7 +144,7 @@ jobs:
           cp -r bench /tmp/main-baseline/bench
           cp project.scala /tmp/main-baseline/project.scala
           cd /tmp/main-baseline
-          scala-cli --power run --jmh . --exclude "test/**" -- \
+          scala-cli --power run --jmh . --exclude "test/**" --exclude "scripts/**" -- \
             -f 1 -wi 3 -i 5 -w 300ms -r 300ms -rf json -rff "$GITHUB_WORKSPACE/main-bench.json"
       - name: Compare
         run: |
