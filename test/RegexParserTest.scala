@@ -73,12 +73,12 @@ class RegexParserTest extends munit.FunSuite:
 
   test("parses bounded repetition {2}") {
     val a = Regex.lit('a')
-    assertEquals(parse("a{2}"), a.concat(a))
+    assertEquals(parse("a{2}"), a.repeat(2, 2))
   }
 
   test("parses unbounded repetition {2,}") {
     val a = Regex.lit('a')
-    assertEquals(parse("a{2,}"), a.concat(a).concat(a.star))
+    assertEquals(parse("a{2,}"), a.repeat(2, Int.MaxValue))
   }
 
   test("parses alternation") {
