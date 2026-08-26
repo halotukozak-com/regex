@@ -471,8 +471,7 @@ object Regex:
 
       val n = nodeInts.length / 4
       val nodes = new Array[Regex](n)
-      var i = 0
-      while i < n do
+      (0 until n).foreach { i =>
         val arg1 = nodeInts(i * 4 + 1)
         val arg2 = nodeInts(i * 4 + 2)
         val arg3 = nodeInts(i * 4 + 3)
@@ -489,7 +488,7 @@ object Regex:
           case tag @ (RegexTag.Alt | RegexTag.Inter) =>
             val parts = (arg1 until arg1 + arg2).map(idx => nodes(partsFlat(idx))).toSet
             if tag == RegexTag.Alt then Alt(parts) else Inter(parts)
-        i += 1
+      }
       nodes(n - 1)
 
   /**
