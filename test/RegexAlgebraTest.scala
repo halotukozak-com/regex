@@ -137,8 +137,16 @@ class RegexAlgebraTest extends munit.FunSuite:
     assertEquals(rA.repeat(1, 1), rA)
   }
 
-  test("repeat {n, MaxValue} ends with Star") {
-    assertEquals(rA.repeat(2, Int.MaxValue), rA.concat(rA).concat(rA.star))
+  test("repeat {lo,hi} is a single Repeat node, not lo/hi copies of the regex") {
+    rA.repeat(2, Int.MaxValue) match
+      case Repeat(r, 2, Int.MaxValue) => assertEquals(r, rA)
+      case other => fail(s"not Repeat(rA, 2, MaxValue): $other")
+  }
+
+  test("repeat {n, MaxValue} matches the same language as the unrolled concat+star form") {
+    val repeated = Subset.of(rA.repeat(2, Int.MaxValue))
+    val unrolled = Subset.of(rA.concat(rA).concat(rA.star))
+    assert(repeated.subset(unrolled) && unrolled.subset(repeated))
   }
 
   test("repeat rejects invalid bounds") {
