@@ -488,10 +488,7 @@ object Regex:
           case RegexTag.Repeat => Repeat(nodes(arg1), arg2, arg3)
           case tag @ (RegexTag.Alt | RegexTag.Inter) =>
             val parts = mutable.Set.empty[Regex]
-            var k = 0
-            while k < arg2 do
-              parts += nodes(partsFlat(arg1 + k))
-              k += 1
+            (arg1 until arg1 + arg2).foreach(idx => parts += nodes(partsFlat(idx)))
             if tag == RegexTag.Alt then Alt(parts.toSet) else Inter(parts.toSet)
         i += 1
       nodes(n - 1)
