@@ -318,24 +318,21 @@ object Regex:
     case Enter(node: Regex)
     case Exit(node: Regex)
 
-  inline private val EpsTag = 0
-  inline private val EmptyTag = 1
-  inline private val CharsTag = 2
-  inline private val ConcatTag = 3
-  inline private val AltTag = 4
-  inline private val InterTag = 5
-  inline private val StarTag = 6
-  inline private val ComplTag = 7
-  inline private val LookTag = 8
-  inline private val StartAnchorTag = 9
-  inline private val RepeatTag = 10
+  /**
+   * Per-node tag in the compact string [[ToExpr]] produces - plain (no `extends java.lang.Enum`)
+   * so it stays pure Scala, matching this file's own cross-platform (JVM/Scala.js/Scala Native)
+   * goal; `.ordinal`/`fromOrdinal` are all the round-trip needs, and nothing outside this file
+   * ever sees a `RegexTag` value, so there's no reason to take on a JVM-only Java-interop type.
+   */
+  private enum RegexTag:
+    case Eps, Empty, Chars, Concat, Alt, Inter, Star, Compl, Look, StartAnchor, Repeat
 
   /**
-   * Reconstructs a `Regex` from the compact string [[ToExpr]] produces: `nodes|partsFlat`, where
-   * `nodes` is a `,`-joined `tag,arg1,arg2,arg3` quadruple per node (nodes laid out so every
-   * child index is smaller than its parent's) and `partsFlat` is a `,`-joined flat list of
-   * [[Alt]]/[[Inter]] children indices. A single forward pass then builds each node from its
-   * already-built children, with no recursion at all on either side of this round trip.
+   * Reconstructs a `Regex` from the two compact strings [[ToExpr]] produces: `nodesPart` is a
+   * `,`-joined `tag,arg1,arg2,arg3` quadruple per node (nodes laid out so every child index is
+   * smaller than its parent's), and `partsFlatPart` is a `,`-joined flat list of [[Alt]]/[[Inter]]
+   * children indices. A single forward pass then builds each node from its already-built
+   * children, with no recursion at all on either side of this round trip.
    *
    * `arg1`/`arg2`/`arg3` are reused across tags rather than given one array per case, since at
    * most three ints are ever needed per node:
@@ -346,44 +343,43 @@ object Regex:
    *  - [[Chars]]: `arg1` = index into `charSets`.
    *  - [[Alt]]/[[Inter]]: `arg1`/`arg2` = offset/count of this node's children within `partsFlat`.
    *
-   * A single string, not the five parallel `Array[Int]` literals an earlier version of this used,
-   * because each element of an embedded array literal costs its own `dup`/`ldc`/`iastore`
-   * bytecode instructions - enough of them (e.g. from a long literal string; see [[ToExpr]]) hits
-   * the JVM's 64KB-per-method bytecode ceiling. A string constant is one `ldc` regardless of
-   * length, so the call site's bytecode size no longer scales with the source pattern's size at
-   * all; the only remaining limit is the classfile format's 65535-byte cap on a single constant.
+   * Strings, not the five parallel `Array[Int]` literals an earlier version of this used, because
+   * each element of an embedded array literal costs its own `dup`/`ldc`/`iastore` bytecode
+   * instructions - enough of them (e.g. from a long literal string; see [[ToExpr]]) hits the
+   * JVM's 64KB-per-method bytecode ceiling. A string constant is one `ldc` regardless of length,
+   * so the call site's bytecode size no longer scales with the source pattern's size at all; the
+   * only remaining limit is the classfile format's 65535-byte cap on a single constant. Two
+   * strings rather than one joined by a delimiter, since there's already an unambiguous split
+   * between them (a fixed parameter each) - no delimiter to pick or reparse.
    */
-  private[regex] def fromEncoded(encoded: String, charSets: IndexedSeq[CharSet]): Regex =
-    val bar = encoded.indexOf('|')
-    val nodeInts = encoded.substring(0, bar).split(',').map(_.toInt)
-    val partsFlatStr = encoded.substring(bar + 1)
-    val partsFlat = if partsFlatStr.isEmpty then Array.empty[Int] else partsFlatStr.split(',').map(_.toInt)
+  private[regex] def fromEncoded(nodesPart: String, partsFlatPart: String, charSets: IndexedSeq[CharSet]): Regex =
+    val nodeInts = nodesPart.split(',').map(_.toInt)
+    val partsFlat = if partsFlatPart.isEmpty then Array.empty[Int] else partsFlatPart.split(',').map(_.toInt)
 
     val n = nodeInts.length / 4
     val nodes = new Array[Regex](n)
     var i = 0
     while i < n do
-      val tag = nodeInts(i * 4)
       val arg1 = nodeInts(i * 4 + 1)
       val arg2 = nodeInts(i * 4 + 2)
       val arg3 = nodeInts(i * 4 + 3)
-      nodes(i) = tag match
-        case EpsTag => Eps
-        case EmptyTag => Empty
-        case StartAnchorTag => StartAnchor
-        case CharsTag => Chars(charSets(arg1))
-        case ConcatTag => Concat(nodes(arg1), nodes(arg2))
-        case StarTag => Star(nodes(arg1))
-        case ComplTag => Compl(nodes(arg1))
-        case LookTag => Look(nodes(arg1), arg2 != 0)
-        case RepeatTag => Repeat(nodes(arg1), arg2, arg3)
-        case AltTag | InterTag =>
+      nodes(i) = RegexTag.fromOrdinal(nodeInts(i * 4)) match
+        case RegexTag.Eps => Eps
+        case RegexTag.Empty => Empty
+        case RegexTag.StartAnchor => StartAnchor
+        case RegexTag.Chars => Chars(charSets(arg1))
+        case RegexTag.Concat => Concat(nodes(arg1), nodes(arg2))
+        case RegexTag.Star => Star(nodes(arg1))
+        case RegexTag.Compl => Compl(nodes(arg1))
+        case RegexTag.Look => Look(nodes(arg1), arg2 != 0)
+        case RegexTag.Repeat => Repeat(nodes(arg1), arg2, arg3)
+        case tag @ (RegexTag.Alt | RegexTag.Inter) =>
           var parts = Set.empty[Regex]
           var k = 0
           while k < arg2 do
             parts += nodes(partsFlat(arg1 + k))
             k += 1
-          if tag == AltTag then Alt(parts) else Inter(parts)
+          if tag == RegexTag.Alt then Alt(parts) else Inter(parts)
       i += 1
     nodes(n - 1)
 
@@ -429,9 +425,9 @@ object Regex:
       val charSets = mutable.ArrayBuffer.empty[CharSet]
       val steps = mutable.ArrayDeque(Enter(r))
 
-      def push(tag: Int, a: Int, b: Int, c: Int): Int =
+      def push(tag: RegexTag, a: Int, b: Int, c: Int): Int =
         val idx = tags.length
-        tags += tag
+        tags += tag.ordinal
         arg1 += a
         arg2 += b
         arg3 += c
@@ -444,13 +440,13 @@ object Regex:
           case Enter(node) if index.contains(node) => ()
           case Enter(node) =>
             node match
-              case Eps => index(node) = push(EpsTag, 0, 0, 0)
-              case Empty => index(node) = push(EmptyTag, 0, 0, 0)
-              case StartAnchor => index(node) = push(StartAnchorTag, 0, 0, 0)
+              case Eps => index(node) = push(RegexTag.Eps, 0, 0, 0)
+              case Empty => index(node) = push(RegexTag.Empty, 0, 0, 0)
+              case StartAnchor => index(node) = push(RegexTag.StartAnchor, 0, 0, 0)
               case Chars(set) =>
                 val csIdx = charSets.length
                 charSets += set
-                index(node) = push(CharsTag, csIdx, 0, 0)
+                index(node) = push(RegexTag.Chars, csIdx, 0, 0)
               case Concat(a, b) =>
                 steps += Exit(node)
                 enter(b)
@@ -475,28 +471,28 @@ object Regex:
                 parts.foreach(enter)
           case Exit(node) =>
             index(node) = node match
-              case Concat(a, b) => push(ConcatTag, index(a), index(b), 0)
-              case Star(inner) => push(StarTag, index(inner), 0, 0)
-              case Repeat(inner, lo, hi) => push(RepeatTag, index(inner), lo, hi)
-              case Compl(inner) => push(ComplTag, index(inner), 0, 0)
-              case Look(inner, positive) => push(LookTag, index(inner), if positive then 1 else 0, 0)
+              case Concat(a, b) => push(RegexTag.Concat, index(a), index(b), 0)
+              case Star(inner) => push(RegexTag.Star, index(inner), 0, 0)
+              case Repeat(inner, lo, hi) => push(RegexTag.Repeat, index(inner), lo, hi)
+              case Compl(inner) => push(RegexTag.Compl, index(inner), 0, 0)
+              case Look(inner, positive) => push(RegexTag.Look, index(inner), if positive then 1 else 0, 0)
               case Alt(parts) =>
                 val off = partsFlat.length
                 parts.foreach(p => partsFlat += index(p))
-                push(AltTag, off, parts.size, 0)
+                push(RegexTag.Alt, off, parts.size, 0)
               case Inter(parts) =>
                 val off = partsFlat.length
                 parts.foreach(p => partsFlat += index(p))
-                push(InterTag, off, parts.size, 0)
+                push(RegexTag.Inter, off, parts.size, 0)
               case leaf => throw MatchError(s"unreachable: leaf node $leaf pushed as Exit")
 
       val nodesPart = Iterator
         .range(0, tags.length)
         .flatMap(i => Iterator(tags(i), arg1(i), arg2(i), arg3(i)))
         .mkString(",")
-      val encoded = s"$nodesPart|${partsFlat.mkString(",")}"
+      val partsFlatPart = partsFlat.mkString(",")
       val charSetsExpr = Varargs(charSets.toSeq.map(Expr(_)))
-      '{ Regex.fromEncoded(${ Expr(encoded) }, IndexedSeq($charSetsExpr*)) }
+      '{ Regex.fromEncoded(${ Expr(nodesPart) }, ${ Expr(partsFlatPart) }, IndexedSeq($charSetsExpr*)) }
   // $COVERAGE-ON$
 
 extension [A, CC[X] <: Iterable[X]](xs: scala.collection.IterableOps[A, CC, CC[A]])
