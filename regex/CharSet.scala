@@ -59,13 +59,21 @@ object CharSet:
         case null => ()
         case c => builder += c
       of(builder.result())
-    // The `cs.union(other)` call below resolves to *this* extension method (verified: it
-    // returns the coalesced merge, not a plain concat) - but since `CharSet` is transparently
-    // `ArraySeq[Range]` in this defining scope, the compiler's overload search also considers
-    // (and warns about) `SeqOps`'s unrelated, deprecated `union`, even though it isn't the one
-    // actually called. `@nowarn` documents that this specific warning is a false positive.
-    @nowarn("cat=deprecation")
-    def |(other: CharSet): CharSet = cs.union(other)
+
+    /**
+     * `cs.union(other)` here would make the compiler's overload search also consider (and
+     * silently bind to instead of `union` above) the inherited, deprecated `SeqOps.union` -
+     * `CharSet` is transparently `ArraySeq[Range]` in this defining scope. Renaming the import
+     * forces resolution to *this* `union` specifically, since `unionRenamed` has nothing else
+     * to collide with. `@nowarn` on the whole method (rather than the `import` line itself,
+     * which doesn't accept annotations) silences the resulting - and, here, incorrect -
+     * "unused import" warning: the renamed import *is* used, just via extension-call syntax
+     * (`cs.unionRenamed(...)`) the unused-import checker doesn't recognize as a use.
+     */
+    @nowarn("msg=unused")
+    def |(other: CharSet): CharSet =
+      import CharSet.union as unionRenamed
+      cs.unionRenamed(other)
 
     infix def intersect(other: CharSet): CharSet =
       // No sizeHint here (unlike union/normalize): the actual intersection is very often much
@@ -84,7 +92,15 @@ object CharSet:
         if lo <= hi then builder += Range(lo, hi)
         if x.hi < y.hi then i += 1 else j += 1
       of(builder.result())
-    def &(other: CharSet): CharSet = intersect(other)
+
+    /**
+     * Same reasoning as `|` above - `SeqOps` also inherits an `intersect` (multiset
+     * intersection by element equality, not numeric overlap).
+     */
+    @nowarn("msg=unused")
+    def &(other: CharSet): CharSet =
+      import CharSet.intersect as intersectRenamed
+      cs.intersectRenamed(other)
 
     def complement: CharSet =
       // Walks `cs` by index rather than `.head`/`.tail`: unlike `Vector`, slicing off the

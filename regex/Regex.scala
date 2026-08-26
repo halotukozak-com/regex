@@ -52,8 +52,9 @@ private def regexInterpolatorImpl(scExpr: Expr[StringContext])(using quotes: Quo
  * Supports literals, escapes (\d \D \s \S \w \W \t \n \r \f \a \e \v \cX \0[n[n]] \xhh
  * \x{h...h} \uhhhh \Q...\E \R and meta-escapes), character classes (including ranges, negation,
  * nested subclasses, and `&&` intersection), `.`, alternation `|`, non-capturing-style groups
- * `(...)`, lookahead `(?=...)` `(?!...)`, anchors `^` `$` `\A` `\Z` `\z`, quantifiers `*` `+` `?`
- * `{n}` `{n,}` `{n,m}` (bounds capped at [[Regex.maxRepeatBound]]).
+ * `(...)`, lookahead `(?=...)` `(?!...)`, the `i` inline flag `(?i)` `(?-i)` `(?i:...)`
+ * `(?-i:...)`, anchors `^` `$` `\A` `\Z` `\z`, quantifiers `*` `+` `?` `{n}` `{n,}` `{n,m}`
+ * (bounds capped at [[Regex.maxRepeatBound]]).
  *
  * Unsupported (parser returns [[RegexParseError.UnsupportedFeature]]):
  * word-boundary anchors `\b` `\B`, `\G`, lookbehind `(?<=` `(?<!`,

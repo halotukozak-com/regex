@@ -35,24 +35,32 @@ object RegexParseError:
  * \) \[ \] \{ \} \| \^ \$ \-), `.`, char classes `[...]` `[^...]` with ranges, nested shorthand
  * escapes (`[\da-f]`), nested subclasses, and `&&` intersection (`[a-z&&[^aeiou]]`) (`\b`
  * inside a class means backspace, matching Java), alternation `|`, groups `(...)` (capturing or
- * `(?:...)`, flag groups are NOT supported), lookahead `(?=...)` `(?!...)`, quantifiers `*` `+`
- * `?` `{n}` `{n,}` `{n,m}` (bounds capped at [[Regex.maxRepeatBound]]), anchors `^` `$` `\A` `\Z`
- * `\z`.
+ * `(?:...)`), lookahead `(?=...)` `(?!...)`, the `i` inline flag `(?i)` `(?-i)` `(?i:...)`
+ * `(?-i:...)` (ASCII-only case folding, matching Java's `CASE_INSENSITIVE` without
+ * `UNICODE_CASE`), quantifiers `*` `+` `?` `{n}` `{n,}` `{n,m}` (bounds capped at
+ * [[Regex.maxRepeatBound]]), anchors `^` `$` `\A` `\Z` `\z`.
  *
  * Unsupported: word-boundary anchors `\b` `\B`, `\G`, lookbehind, backreferences
  * `\1`..`\9` `\k<name>` `\g{...}`, Unicode properties `\p{...}`, grapheme clusters `\X`,
- * named groups, flag groups. Any other undefined letter escape (e.g. `\m`, `\y`, `\q`) is
- * rejected as invalid syntax, matching `java.util.regex.Pattern`'s own behavior.
+ * named groups, other inline flags (`(?m)`, `(?s)`, `(?d)`, `(?u)`, `(?x)`, `(?U)`). Any other
+ * undefined letter escape (e.g. `\m`, `\y`, `\q`) is rejected as invalid syntax, matching
+ * `java.util.regex.Pattern`'s own behavior.
  */
 object RegexParser:
 
   private final class InvalidSyntaxSignal(val msg: String, val pos: Int) extends RuntimeException(msg)
   private final class UnsupportedSignal(val feature: String, val pos: Int) extends RuntimeException(feature)
 
-  /** What kind of group `(...)` a header (`?:`, `?=`, `?!`, or none) introduced. */
+  /** What kind of group `(...)` a header (`?:`, `?=`, `?!`, `?i` &c., or none) introduced. */
   private enum GroupKind:
     case Plain
     case Look(positive: Boolean)
+
+    /** `(?i)`/`(?-i)`: mutates the *enclosing* scope's flag state, not a scope of its own. */
+    case FlagDirective(setI: Boolean, clearI: Boolean)
+
+    /** `(?i:...)`/`(?-i:...)`: flag applies only within `...`, restored once it closes. */
+    case ScopedFlags(setI: Boolean, clearI: Boolean)
 
   private val whitespaceSet: CharSet = CharSet.normalize(
     Range(' ', ' '),
@@ -109,6 +117,18 @@ object RegexParser:
   private final class Parser(private val src: String):
     var pos: Int = 0
 
+    /**
+     * `(?i)` state, threaded through parsing rather than the `Regex`/`Subset` algebra - Java's
+     * default `CASE_INSENSITIVE` (without `UNICODE_CASE`) is plain ASCII a-z/A-Z folding, so
+     * every literal/range this parser produces while this is `true` gets expanded to include
+     * its counterpart at the point it's built, per [[literalCharSet]]/[[foldCharSet]]. Scoped
+     * like an ordinary variable would be in a recursive-descent parser: saved and restored
+     * around a group's body in [[parseGroup]], except for a bare `(?i)` directive, which has no
+     * body of its own and instead mutates whatever scope encloses it - matching Java, where
+     * `(a(?i)b)c` doesn't apply case-insensitivity to the `c` outside the group.
+     */
+    private var caseInsensitive: Boolean = false
+
     private def fail(msg: String): Nothing =
       throw new InvalidSyntaxSignal(msg, pos)
 
@@ -127,6 +147,43 @@ object RegexParser:
     private def expect(c: Char): Unit =
       if eof || cur != c then fail(s"expected `$c` at position $pos")
       pos += 1
+
+    /**
+     * ASCII-only case fold of a single range: itself, plus (if it overlaps `A-Z`/`a-z`) the
+     * corresponding shifted counterpart sub-range - matching `java.util.regex`'s
+     * `CASE_INSENSITIVE` default (no `UNICODE_CASE`): only plain ASCII letters fold, nothing
+     * else (verified against `java.util.regex`: e.g. `(?i)straße` does not match
+     * "STRASSE"). Handles partial overlaps correctly (e.g. folding `[Y-b]`, which spans `Y Z [
+     * \ ] ^ _ \` a b`, adds `y z` and `A B` for the letter-only sub-ranges without touching the
+     * symbols in between).
+     */
+    private def foldRange(lo: Int, hi: Int): CharSet =
+      val base = CharSet.range(lo, hi)
+      val upperLo = math.max(lo, 'A'.toInt)
+      val upperHi = math.min(hi, 'Z'.toInt)
+      val withUpper = if upperLo <= upperHi then base | CharSet.range(upperLo + 32, upperHi + 32) else base
+      val lowerLo = math.max(lo, 'a'.toInt)
+      val lowerHi = math.min(hi, 'z'.toInt)
+      if lowerLo <= lowerHi then withUpper | CharSet.range(lowerLo - 32, lowerHi - 32) else withUpper
+
+    /**
+     * Folds every range in `set` independently, then reunions them. Applying this to a
+     * character class's content *before* negating it (see `parseClassBody`) is what makes
+     * `(?i)[^a-z]` correctly exclude `A-Z` too, rather than only excluding lowercase - verified
+     * against `java.util.regex`. Also correctly handles `&&` (`(?i)[a-z&&[^aeiou]]`): each
+     * bracketed operand independently folds-then-negates via its own `parseClassBody` call
+     * before the two are intersected, so the vowel exclusion already covers both cases by the
+     * time the outer intersection (and this fold) runs.
+     */
+    private def foldCharSet(set: CharSet): CharSet =
+      set.iterator.foldLeft(CharSet.empty)((acc, r) => acc | foldRange(r.lo, r.hi))
+
+    /** A single literal code point, case-folded if `(?i)` is currently active. */
+    private def literalCharSet(c: Int): CharSet = if caseInsensitive then foldRange(c, c) else CharSet.single(c)
+
+    /** Like [[Regex.literal]], but folds each character per [[literalCharSet]] along the way. */
+    private def literalText(text: String): Regex =
+      text.foldRight(Eps: Regex)((c, acc) => Regex(literalCharSet(c.toInt)).concat(acc))
 
     /** alt = concat ('|' concat)* */
     def parseAlt(): Regex =
@@ -220,7 +277,7 @@ object RegexParser:
           fail(s"unexpected `$cur` at position $pos")
         case c =>
           pos += 1
-          Regex.lit(c)
+          Regex(literalCharSet(c.toInt))
 
     private def parseGroup(): Regex =
       expect('(')
@@ -229,11 +286,42 @@ object RegexParser:
           pos += 1
           consumeGroupHeader()
         else GroupKind.Plain
-      val inner = parseAlt()
-      expect(')')
       kind match
-        case GroupKind.Plain => inner
-        case GroupKind.Look(positive) => Regex.lookahead(inner, positive)
+        // No save/restore here: unlike every other group kind, a bare `(?i)`/`(?-i)` isn't a
+        // scope of its own - its body is always empty (`)` follows immediately) - it mutates
+        // whatever scope encloses it, same as an ordinary assignment would.
+        case GroupKind.FlagDirective(setI, clearI) =>
+          applyFlags(setI, clearI)
+          val inner = parseAlt()
+          expect(')')
+          inner
+        case GroupKind.Plain =>
+          scoped:
+            val inner = parseAlt()
+            expect(')')
+            inner
+        case GroupKind.Look(positive) =>
+          scoped:
+            val inner = parseAlt()
+            expect(')')
+            Regex.lookahead(inner, positive)
+        case GroupKind.ScopedFlags(setI, clearI) =>
+          scoped:
+            applyFlags(setI, clearI)
+            val inner = parseAlt()
+            expect(')')
+            inner
+
+    /** Runs `body`, restoring `caseInsensitive` to its pre-`body` value afterward. */
+    private def scoped(body: => Regex): Regex =
+      val saved = caseInsensitive
+      val result = body
+      caseInsensitive = saved
+      result
+
+    private def applyFlags(setI: Boolean, clearI: Boolean): Unit =
+      if setI then caseInsensitive = true
+      if clearI then caseInsensitive = false
 
     private def consumeGroupHeader(): GroupKind =
       if eof then unsupported("incomplete group header")
@@ -251,7 +339,34 @@ object RegexParser:
           pos += 1
           if !eof && (cur == '=' || cur == '!') then unsupported("lookbehind")
           else unsupported("named group")
+        case _ => parseFlagGroupHeader()
+
+    /**
+     * `flags`, `flags-flags`, `:` or `)` following either - only `i` is a recognized flag
+     * letter here; any other letter from Java's `idmsuxU` set is a recognized-but-unsupported
+     * feature (`(?m)`, `(?s)`, ... aren't implemented yet), and anything else is a malformed
+     * group header.
+     */
+    private def parseFlagGroupHeader(): GroupKind =
+      val setI = consumeIFlag()
+      val clearI = if !eof && cur == '-' then
+        pos += 1; consumeIFlag()
+      else false
+      if eof then unsupported("incomplete group header")
+      (cur: @switch) match
+        case ':' =>
+          pos += 1
+          GroupKind.ScopedFlags(setI, clearI)
+        case ')' => GroupKind.FlagDirective(setI, clearI)
         case _ => unsupported("flag group")
+
+    private def consumeIFlag(): Boolean =
+      if eof then false
+      else if cur == 'i' then
+        pos += 1
+        true
+      else if "dmsuxU".contains(cur) then unsupported(s"flag group `(?${consume()})`")
+      else false
 
     private def parseCharClass(): Regex = Regex(parseClassBody())
 
@@ -269,7 +384,8 @@ object RegexParser:
       if negated then pos += 1
       val set = parseClassIntersection()
       expect(']')
-      if negated then set.complement else set
+      val folded = if caseInsensitive then foldCharSet(set) else set
+      if negated then folded.complement else folded
 
     /** intersection = union ('&&' union)* */
     private def parseClassIntersection(): CharSet =
@@ -345,14 +461,14 @@ object RegexParser:
         case _ =>
           readEscapedChar(inClass = false) match
             case Left(set) => Regex(set)
-            case Right(c) => Regex(CharSet.single(c))
+            case Right(c) => Regex(literalCharSet(c))
 
     /** Consumes literal text up to (and including) `\E`, or to the end of the pattern if absent. */
     private def parseQuoted(): Regex =
       val end = src.indexOf("\\E", pos)
       val text = if end < 0 then src.substring(pos) else src.substring(pos, end)
       pos = if end < 0 then src.length else end + 2
-      Regex.literal(text)
+      literalText(text)
 
     /**
      * Reads char following `\\`. Either expands to a [[CharSet]] (shorthand) or yields a
