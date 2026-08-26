@@ -18,6 +18,20 @@ class CharSetTest extends munit.FunSuite:
     assertEquals(u.iterator.toVector, Vector(Range('a', 'z')))
   }
 
+  test("| operator agrees with union") {
+    val a = CharSet.range('a', 'm')
+    val b = CharSet.range('h', 'z')
+    assertEquals((a | b).iterator.toVector, Vector(Range('a', 'z')))
+    assertEquals(a | b, a.union(b))
+  }
+
+  test("& operator agrees with intersect") {
+    val a = CharSet.range('a', 'm')
+    val b = CharSet.range('h', 'z')
+    assertEquals((a & b).iterator.toVector, Vector(Range('h', 'm')))
+    assertEquals(a & b, a.intersect(b))
+  }
+
   test("union keeps disjoint ranges separate") {
     val a = CharSet.range('a', 'c')
     val b = CharSet.range('x', 'z')
