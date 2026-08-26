@@ -4,6 +4,7 @@ import halotukozak.commons.deepRecursive
 
 import scala.annotation.{threadUnsafe, unused}
 import scala.collection.immutable.SortedSet
+import scala.collection.mutable
 import scala.quoted.{Expr, Quotes, ToExpr, Varargs}
 import scala.util.hashing.MurmurHash3
 
@@ -86,6 +87,14 @@ enum Regex:
   /** Kleene star `r*`. */
   case Star private[Regex] (r: Regex)
 
+  /**
+   * Bounded repetition `r{lo,hi}` (`hi` may be `Int.MaxValue` for the unbounded `{lo,}` form).
+   * Kept as a single node carrying `lo`/`hi` symbolically, instead of unfolding into that many
+   * copies of `r` - see [[Regex.repeat]] for why, and [[Subset.rawDerive]] for how a Brzozowski
+   * derivative is taken through it without ever materializing the unfolded form.
+   */
+  case Repeat private[Regex] (r: Regex, lo: Int, hi: Int)
+
   /** Complement `¬r`. */
   case Compl private[Regex] (r: Regex)
 
@@ -128,6 +137,7 @@ enum Regex:
     case Alt(parts) => parts.exists(_.nullable)
     case Inter(parts) => parts.forall(_.nullable)
     case Star(_) => true
+    case Repeat(r, lo, _) => lo == 0 || r.nullable
     case Compl(inner) => !inner.nullable
     case Look(r, positive) => if positive then r.nullable else !r.nullable
     case StartAnchor => true
@@ -148,6 +158,7 @@ enum Regex:
     case Alt(parts) => parts.iterator.map(_.alphabetBoundaries).reduce(_ ++ _)
     case Inter(parts) => parts.iterator.map(_.alphabetBoundaries).reduce(_ ++ _)
     case Star(inner) => inner.alphabetBoundaries
+    case Repeat(inner, _, _) => inner.alphabetBoundaries
     case Compl(inner) => inner.alphabetBoundaries
     case Look(r, _) => r.alphabetBoundaries
     case StartAnchor => SortedSet.empty
@@ -166,6 +177,7 @@ enum Regex:
     case Alt(parts) => parts.exists(_.hasStartAnchor)
     case Inter(parts) => parts.exists(_.hasStartAnchor)
     case Star(inner) => inner.hasStartAnchor
+    case Repeat(inner, _, _) => inner.hasStartAnchor
     case Compl(inner) => inner.hasStartAnchor
     case Look(r, _) => r.hasStartAnchor
 
@@ -188,16 +200,28 @@ enum Regex:
 
   def * : Regex = star
 
-  /** Quantifier `this{n,m}` where m can be `Int.MaxValue` for unbounded. */
+  /**
+   * Quantifier `this{lo,hi}` where `hi` can be `Int.MaxValue` for unbounded. Produces a single
+   * [[Repeat]] node carrying `lo`/`hi` symbolically - not `lo`/`hi` copies of `this` - the way
+   * `regex-syntax` (Rust's regex crate) keeps counted repetitions unexpanded in its `Hir` so AST
+   * size stays proportional to the pattern's *text*, not the language it denotes; a `{1,1000}`
+   * quantifier used to mean ~1000 [[Concat]]/[[Alt]] nodes here too, which was both wasted
+   * allocation on every call and, when spliced by `regex"..."`'s `ToExpr[Regex]`, deep enough to
+   * overflow the compiler's own stack expanding the macro.
+   */
   def repeat(lo: Int, hi: Int): Regex =
     require(lo >= 0 && hi >= lo, s"invalid bounds {$lo,$hi}")
     require(
       lo <= Regex.maxRepeatBound && (hi == Int.MaxValue || hi <= Regex.maxRepeatBound),
       s"quantifier bound exceeds maximum supported value of ${Regex.maxRepeatBound} (got {$lo,$hi})",
     )
-    val mandatory = (1 to lo).foldLeft[Regex](Regex.Eps)((acc, _) => this.concat(acc))
-    if hi == Int.MaxValue then mandatory.concat(star)
-    else mandatory.concat((1 to (hi - lo)).foldLeft[Regex](Regex.Eps)((acc, _) => Regex.Eps | this.concat(acc)))
+    this match
+      case _ if hi == 0 => Regex.Eps
+      case Regex.Eps => Regex.Eps
+      case Regex.Empty => if lo == 0 then Regex.Eps else Regex.Empty
+      case _ if lo == 0 && hi == Int.MaxValue => star
+      case _ if lo == 1 && hi == 1 => this
+      case _ => Regex.Repeat(this, lo, hi)
 
 object Regex:
 
@@ -211,10 +235,12 @@ object Regex:
         case _ => Concat(a, b)
 
   /**
-   * Upper bound on quantifier bounds accepted by [[repeat]]. `{n,m}` is unfolded into an
-   * `n`- (or `m`-) sized chain of [[Concat]] nodes, so unbounded values would let a single
-   * malformed pattern build an unbounded/exponential AST. Real-world token patterns never
-   * need bounds anywhere near this size.
+   * Upper bound on quantifier bounds accepted by [[repeat]]. `Repeat` itself stays O(1)
+   * regardless of `lo`/`hi` (see [[repeat]]), but each Brzozowski derivative step through it
+   * (`Subset.rawDerive`) peels one repetition off, so exploring `L(r{0,hi})` up to a fixed point
+   * (`Subset.isEmpty`/`subset`) still visits on the order of `hi` distinct states - an unbounded
+   * value would let a single malformed pattern blow up that exploration. Real-world token
+   * patterns never need bounds anywhere near this size.
    */
   val maxRepeatBound: Int = 1000
 
@@ -285,31 +311,183 @@ object Regex:
 
   // $COVERAGE-OFF$
   /**
-   * Embeds the value via the raw case constructors directly, instead of regenerating it through
-   * the public smart constructors (`concat`, `alt`, `inter`, `star`, `unary_!`, `lookahead`) at
-   * every call site. The smart constructors exist to (re-)establish ACI normalization and merge
-   * `Chars` sets when building a tree from scratch; a `Regex` value reaching this `given` is
-   * already normalized, so re-running them at every macro call site - and again at every class
-   * load, since the generated code re-executes them - would just redo that work for a result
-   * that's already known. The raw constructors are accessible here because this `given` lives
-   * inside `object Regex`, in the same scope as the `private[Regex]` cases themselves.
+   * A pending step in [[ToExpr]]'s iterative post-order walk: index `node`'s children first
+   * (`Enter`), then, once they're all indexed, `node` itself (`Exit`).
+   */
+  private enum ExprBuildStep:
+    case Enter(node: Regex)
+    case Exit(node: Regex)
+
+  inline private val EpsTag = 0
+  inline private val EmptyTag = 1
+  inline private val CharsTag = 2
+  inline private val ConcatTag = 3
+  inline private val AltTag = 4
+  inline private val InterTag = 5
+  inline private val StarTag = 6
+  inline private val ComplTag = 7
+  inline private val LookTag = 8
+  inline private val StartAnchorTag = 9
+  inline private val RepeatTag = 10
+
+  /**
+   * Reconstructs a `Regex` from the flat encoding [[ToExpr]] produces: nodes laid out so every
+   * child index is smaller than its parent's, letting a single forward pass build each node from
+   * its already-built children with no recursion at all, on either side of this round trip.
+   *
+   * `arg1`/`arg2`/`arg3` are reused across tags rather than given one array per case, since at
+   * most three ints are ever needed per node:
+   *  - [[Concat]]: `arg1`/`arg2` = index of `a`/`b`.
+   *  - [[Star]]/[[Compl]]: `arg1` = index of the inner `r`.
+   *  - [[Look]]: `arg1` = index of `r`; `arg2` = `positive` as `0`/`1`.
+   *  - [[Repeat]]: `arg1` = index of `r`; `arg2`/`arg3` = `lo`/`hi`.
+   *  - [[Chars]]: `arg1` = index into `charSets`.
+   *  - [[Alt]]/[[Inter]]: `arg1`/`arg2` = offset/count of this node's children within `partsFlat`.
+   */
+  private[regex] def fromEncoded(
+    tags: Array[Int],
+    arg1: Array[Int],
+    arg2: Array[Int],
+    arg3: Array[Int],
+    partsFlat: Array[Int],
+    charSets: IndexedSeq[CharSet],
+  ): Regex =
+    val nodes = new Array[Regex](tags.length)
+    var i = 0
+    while i < tags.length do
+      nodes(i) = tags(i) match
+        case EpsTag => Eps
+        case EmptyTag => Empty
+        case StartAnchorTag => StartAnchor
+        case CharsTag => Chars(charSets(arg1(i)))
+        case ConcatTag => Concat(nodes(arg1(i)), nodes(arg2(i)))
+        case StarTag => Star(nodes(arg1(i)))
+        case ComplTag => Compl(nodes(arg1(i)))
+        case LookTag => Look(nodes(arg1(i)), arg2(i) != 0)
+        case RepeatTag => Repeat(nodes(arg1(i)), arg2(i), arg3(i))
+        case AltTag | InterTag =>
+          val off = arg1(i)
+          val cnt = arg2(i)
+          var parts = Set.empty[Regex]
+          var k = 0
+          while k < cnt do
+            parts += nodes(partsFlat(off + k))
+            k += 1
+          if tags(i) == AltTag then Alt(parts) else Inter(parts)
+      i += 1
+    nodes(tags.length - 1)
+
+  /**
+   * Embeds the value's already-computed shape as flat `Array[Int]` tables reconstructed by
+   * [[fromEncoded]], instead of regenerating it through the public smart constructors (`concat`,
+   * `alt`, `inter`, `star`, `unary_!`, `lookahead`) at every call site - the same approach
+   * [[TokenMatcher]]'s `ToExpr` uses to embed its DFA tables. The smart constructors exist to
+   * (re-)establish ACI normalization and merge `Chars` sets when building a tree from scratch; a
+   * `Regex` value reaching this `given` is already normalized, so re-running them at every macro
+   * call site - and again at every class load, since the generated code re-executes them - would
+   * just redo that work for a result that's already known.
+   *
+   * Splicing raw constructor calls one-per-node instead (as an earlier version of this `given`
+   * did) still isn't enough on its own: `regex"..."` on a pattern producing a sufficiently deep
+   * tree - not just from a `{lo,hi}` quantifier (see [[Repeat]], which now keeps those O(1)), but
+   * e.g. from a long literal string, since [[literal]] still builds one [[Concat]] node per
+   * character - can `StackOverflowError` the *compiler itself* while it walks that many levels
+   * of nested calls in a later phase (macro splicing, inlining), regardless of how carefully
+   * *this* macro was written. A flat array is embedded as a single call with no nesting, so no
+   * compiler pass has a deep tree to walk no matter how deep the source `Regex` is.
+   *
+   * Both directions avoid recursion entirely: encoding below walks the tree with an explicit
+   * `steps` stack (needed because, unlike [[halotukozak.commons.deepRecursive]]-trampolined
+   * `concat`/`derive`, [[Alt]]/[[Inter]] recurse into a `Set` of unbounded size, which that
+   * machinery can't unroll), and [[fromEncoded]]'s reconstruction is a single forward loop.
+   *
+   * `index` doubles as a dedup cache: a subtree reachable from multiple places in the tree (e.g.
+   * a repeated alternative) is encoded, and later reconstructed, only once.
    */
   given ToExpr[Regex]:
-    def apply(r: Regex)(using Quotes): Expr[Regex] = r match
-      case Eps => '{ Regex.Eps }
-      case Empty => '{ Regex.Empty }
-      case StartAnchor => '{ Regex.StartAnchor }
-      case Chars(set) => '{ Regex.Chars(${ Expr(set) }) }
-      case Concat(a, b) => '{ Regex.Concat(${ Expr(a) }, ${ Expr(b) }) }
-      case Star(inner) => '{ Regex.Star(${ Expr(inner) }) }
-      case Compl(inner) => '{ Regex.Compl(${ Expr(inner) }) }
-      case Look(inner, positive) => '{ Regex.Look(${ Expr(inner) }, ${ Expr(positive) }) }
-      case Alt(parts) =>
-        val partsExpr = Varargs(parts.toSeq.map(Expr(_)))
-        '{ Regex.Alt(Set($partsExpr*)) }
-      case Inter(parts) =>
-        val partsExpr = Varargs(parts.toSeq.map(Expr(_)))
-        '{ Regex.Inter(Set($partsExpr*)) }
+    def apply(r: Regex)(using Quotes): Expr[Regex] =
+      import ExprBuildStep.*
+      val index = mutable.Map.empty[Regex, Int]
+      val tags = mutable.ArrayBuffer.empty[Int]
+      val arg1 = mutable.ArrayBuffer.empty[Int]
+      val arg2 = mutable.ArrayBuffer.empty[Int]
+      val arg3 = mutable.ArrayBuffer.empty[Int]
+      val partsFlat = mutable.ArrayBuffer.empty[Int]
+      val charSets = mutable.ArrayBuffer.empty[CharSet]
+      val steps = mutable.ArrayDeque(Enter(r))
+
+      def push(tag: Int, a: Int, b: Int, c: Int): Int =
+        val idx = tags.length
+        tags += tag
+        arg1 += a
+        arg2 += b
+        arg3 += c
+        idx
+
+      def enter(node: Regex): Unit = if !index.contains(node) then steps += Enter(node)
+
+      while steps.nonEmpty do
+        steps.removeLast() match
+          case Enter(node) if index.contains(node) => ()
+          case Enter(node) =>
+            node match
+              case Eps => index(node) = push(EpsTag, 0, 0, 0)
+              case Empty => index(node) = push(EmptyTag, 0, 0, 0)
+              case StartAnchor => index(node) = push(StartAnchorTag, 0, 0, 0)
+              case Chars(set) =>
+                val csIdx = charSets.length
+                charSets += set
+                index(node) = push(CharsTag, csIdx, 0, 0)
+              case Concat(a, b) =>
+                steps += Exit(node)
+                enter(b)
+                enter(a)
+              case Star(inner) =>
+                steps += Exit(node)
+                enter(inner)
+              case Repeat(inner, _, _) =>
+                steps += Exit(node)
+                enter(inner)
+              case Compl(inner) =>
+                steps += Exit(node)
+                enter(inner)
+              case Look(inner, _) =>
+                steps += Exit(node)
+                enter(inner)
+              case Alt(parts) =>
+                steps += Exit(node)
+                parts.foreach(enter)
+              case Inter(parts) =>
+                steps += Exit(node)
+                parts.foreach(enter)
+          case Exit(node) =>
+            index(node) = node match
+              case Concat(a, b) => push(ConcatTag, index(a), index(b), 0)
+              case Star(inner) => push(StarTag, index(inner), 0, 0)
+              case Repeat(inner, lo, hi) => push(RepeatTag, index(inner), lo, hi)
+              case Compl(inner) => push(ComplTag, index(inner), 0, 0)
+              case Look(inner, positive) => push(LookTag, index(inner), if positive then 1 else 0, 0)
+              case Alt(parts) =>
+                val off = partsFlat.length
+                parts.foreach(p => partsFlat += index(p))
+                push(AltTag, off, parts.size, 0)
+              case Inter(parts) =>
+                val off = partsFlat.length
+                parts.foreach(p => partsFlat += index(p))
+                push(InterTag, off, parts.size, 0)
+              case leaf => throw MatchError(s"unreachable: leaf node $leaf pushed as Exit")
+
+      val charSetsExpr = Varargs(charSets.toSeq.map(Expr(_)))
+      '{
+        Regex.fromEncoded(
+          ${ Expr(tags.toArray) },
+          ${ Expr(arg1.toArray) },
+          ${ Expr(arg2.toArray) },
+          ${ Expr(arg3.toArray) },
+          ${ Expr(partsFlat.toArray) },
+          IndexedSeq($charSetsExpr*),
+        )
+      }
   // $COVERAGE-ON$
 
 extension [A, CC[X] <: Iterable[X]](xs: scala.collection.IterableOps[A, CC, CC[A]])

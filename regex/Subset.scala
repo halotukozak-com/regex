@@ -111,6 +111,19 @@ object Subset:
         case Alt(parts) => Regex.alt(deriveAll(parts.toList, c, Nil))
         case Inter(parts) => Regex.inter(deriveAll(parts.toList, c, Nil))
         case s @ Star(inner) => inner.derive(c).concat(s)
+
+        /**
+         * Standard counting-automaton derivative rule, taken directly through the symbolic
+         * `Repeat` node instead of first unfolding it: `r{lo,hi} ≡ r · r{max(lo-1,0), hi-1}`
+         * (`r{0,hi} ≡ Eps | r{1,hi}` collapses to the same shape, since `D_c(Eps) = Empty` kills
+         * the "stop now" branch as soon as a character's actually been consumed). `hi` strictly
+         * decreases every step and bottoms out at `r.repeat(_, 0) == Eps` (see `Regex.repeat`),
+         * so this terminates the same way `Star`'s self-referential rule above does.
+         */
+        case Repeat(inner, lo, hi) =>
+          val newHi = if hi == Int.MaxValue then Int.MaxValue else hi - 1
+          inner.derive(c).concat(inner.repeat(math.max(lo - 1, 0), newHi))
+
         case Compl(inner) => !inner.derive(c)
 
         /** Zero-width: `L(Look(r, _)) ⊆ {ε}`, so no nonempty string can start it. */
@@ -191,6 +204,7 @@ object Subset:
         case Alt(parts) => Regex.alt(parts.map(stripStartAnchor))
         case Inter(parts) => Regex.inter(parts.map(stripStartAnchor))
         case Star(inner) => stripStartAnchor(inner).star
+        case Repeat(inner, lo, hi) => stripStartAnchor(inner).repeat(lo, hi)
         case Compl(inner) => !stripStartAnchor(inner)
         case Look(inner, positive) => Regex.lookahead(stripStartAnchor(inner), positive)
         case _ => r
