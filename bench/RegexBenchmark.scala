@@ -40,3 +40,11 @@ class RegexBenchmark:
 
   @Benchmark
   def parse(): Regex = RegexParser.parse(pattern).toOption.get
+
+  // Same shape as `pattern` above, wrapped in `(?i)` - the only one of lookahead/anchors/(?i)
+  // with real parse-time cost, since case folding expands every literal/range CharSet as it's
+  // built (see RegexParser.foldRange/foldCharSet). Directly comparable to `parse` above.
+  private val caseInsensitivePattern = s"(?i)$pattern"
+
+  @Benchmark
+  def parseCaseInsensitive(): Regex = RegexParser.parse(caseInsensitivePattern).toOption.get

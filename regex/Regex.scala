@@ -4,7 +4,7 @@ import halotukozak.commons.deepRecursive
 
 import scala.annotation.{threadUnsafe, unused}
 import scala.collection.immutable.SortedSet
-import scala.quoted.{Expr, Quotes, ToExpr}
+import scala.quoted.{Expr, Quotes, ToExpr, Varargs}
 import scala.util.hashing.MurmurHash3
 
 /**
@@ -284,22 +284,32 @@ object Regex:
     else s.foldRight(Eps: Regex)((c, acc) => lit(c).concat(acc))
 
   // $COVERAGE-OFF$
+  /**
+   * Embeds the value via the raw case constructors directly, instead of regenerating it through
+   * the public smart constructors (`concat`, `alt`, `inter`, `star`, `unary_!`, `lookahead`) at
+   * every call site. The smart constructors exist to (re-)establish ACI normalization and merge
+   * `Chars` sets when building a tree from scratch; a `Regex` value reaching this `given` is
+   * already normalized, so re-running them at every macro call site - and again at every class
+   * load, since the generated code re-executes them - would just redo that work for a result
+   * that's already known. The raw constructors are accessible here because this `given` lives
+   * inside `object Regex`, in the same scope as the `private[Regex]` cases themselves.
+   */
   given ToExpr[Regex]:
     def apply(r: Regex)(using Quotes): Expr[Regex] = r match
       case Eps => '{ Regex.Eps }
       case Empty => '{ Regex.Empty }
-      case Chars(set) => '{ Regex(${ Expr(set) }) }
-      case Concat(a, b) => '{ ${ Expr(a) }.concat(${ Expr(b) }) }
-      case Alt(parts) =>
-        val partsExpr = Expr.ofSeq(parts.toSeq.map(Expr(_)))
-        '{ Regex.alt($partsExpr) }
-      case Inter(parts) =>
-        val partsExpr = Expr.ofSeq(parts.toSeq.map(Expr(_)))
-        '{ Regex.inter($partsExpr) }
-      case Star(inner) => '{ ${ Expr(inner) }.star }
-      case Compl(inner) => '{ ! ${ Expr(inner) } }
-      case Look(r, positive) => '{ Regex.lookahead(${ Expr(r) }, ${ Expr(positive) }) }
       case StartAnchor => '{ Regex.StartAnchor }
+      case Chars(set) => '{ Regex.Chars(${ Expr(set) }) }
+      case Concat(a, b) => '{ Regex.Concat(${ Expr(a) }, ${ Expr(b) }) }
+      case Star(inner) => '{ Regex.Star(${ Expr(inner) }) }
+      case Compl(inner) => '{ Regex.Compl(${ Expr(inner) }) }
+      case Look(inner, positive) => '{ Regex.Look(${ Expr(inner) }, ${ Expr(positive) }) }
+      case Alt(parts) =>
+        val partsExpr = Varargs(parts.toSeq.map(Expr(_)))
+        '{ Regex.Alt(Set($partsExpr*)) }
+      case Inter(parts) =>
+        val partsExpr = Varargs(parts.toSeq.map(Expr(_)))
+        '{ Regex.Inter(Set($partsExpr*)) }
   // $COVERAGE-ON$
 
 extension [A, CC[X] <: Iterable[X]](xs: scala.collection.IterableOps[A, CC, CC[A]])
