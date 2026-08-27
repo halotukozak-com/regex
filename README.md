@@ -89,6 +89,22 @@ back to parsing at runtime and throws `IllegalArgumentException` on failure inst
 `${...}` splices aren't currently supported — only the literal parts of the string are used, so
 `regex"a${x}b"` parses as `"ab"`, ignoring `x`.
 
+### Capturing group spans
+
+`CaptureMatcher` extracts the spans matched by `(...)`/`(?<name>...)` groups from a whole-string
+match, backed by a no-backtracking NFA engine (see its own scaladoc for why this is a separate
+engine from `Subset`/`TokenMatcher`, not an extension of either):
+
+```scala
+import halotukozak.regex.CaptureMatcher
+
+val date = CaptureMatcher.parse("(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})").toOption.get
+val result = date.matchWhole("2026-08-27").get
+
+result.group("year") // Some((start = 0, end = 4))
+result.group(1) // same span, by number instead of name
+```
+
 ## Status
 
 Early (`0.x`). The parser deliberately supports a subset of `java.util.regex.Pattern`'s syntax —
