@@ -48,7 +48,7 @@ class TokenMatcherBenchmark:
 
   /** Steady-state lookup cost: one long identifier, no dead transitions until EOF. */
   @Benchmark
-  def matchAtIdentifier(): Option[(priority: Int, end: Int)] = lexer.matchAt(identifierInput, 0)
+  def matchAtIdentifier(): (priority: Int, end: Int) | Null = lexer.matchAt(identifierInput, 0)
 
   /** Scans a whole token stream, exercising `findFirst`'s skip-then-match loop. */
   @Benchmark
@@ -63,3 +63,45 @@ class TokenMatcherBenchmark:
   /** One-time DFA-construction cost, scaling with the number of racing patterns. */
   @Benchmark
   def compileLexer(): TokenMatcher = TokenMatcher.fromRegexes(lexerPatterns.map(parse)*)
+
+  // A punctuation-only racing set: every pattern is a single ASCII literal with no live
+  // continuation after it, so every match here should take `matchAt`'s `fastAscii` bypass
+  // (see that field's doc comment) instead of the general derivative-DFA walk.
+  private val punctPatterns = Seq("\\{", "\\}", ",", ":", "\\(", "\\)", ";", "\\+", "-", "\\*", "/")
+  private val punctMatcher: TokenMatcher = TokenMatcher.fromRegexes(punctPatterns.map(parse)*)
+  private val punctChars: Array[Char] = Array('{', '}', ',', ':', '(', ')', ';', '+', '-', '*', '/')
+  private var punctInput: String = uninitialized
+
+  @Setup(Level.Trial)
+  def setupPunct(): Unit =
+    val rnd = new scala.util.Random(42)
+    punctInput = Iterator.continually(punctChars(rnd.nextInt(punctChars.length))).take(length).mkString
+
+  /**
+   * Steady-state cost of matching many short (single-char) tokens back to back -- the case
+   * `fastAscii` targets, as opposed to `matchAtIdentifier`'s one-long-match case above.
+   */
+  @Benchmark
+  def matchAtPunctuation(): Int =
+    var pos = 0
+    var count = 0
+    while pos < punctInput.length do
+      punctMatcher.matchAt(punctInput, pos) match
+        case null => pos += 1
+        case m => pos = m.end; count += 1
+    count
+
+  /**
+   * Hand-written charAt dispatch (compiles to a tableswitch) -- the ceiling `fastAscii` chases,
+   * included for context on how close the array-lookup bypass gets to a hardcoded dispatch.
+   */
+  @Benchmark
+  def matchAtPunctuationCharAtBaseline(): Int =
+    var pos = 0
+    var count = 0
+    while pos < punctInput.length do
+      punctInput.charAt(pos) match
+        case '{' | '}' | ',' | ':' | '(' | ')' | ';' | '+' | '-' | '*' | '/' => count += 1
+        case _ => ()
+      pos += 1
+    count
