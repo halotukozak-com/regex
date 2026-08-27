@@ -65,9 +65,25 @@ final class CaptureMatcher private (
 ):
   import CaptureMatcher.*
 
+  private def numGroups: Int = numRegisters / 2 - 1
+
   /** Matches `input` from start to end. [[None]] if the pattern doesn't accept the whole string. */
   def matchWhole(input: CharSequence): Option[MatchResult] =
     runToEnd(program, entry, acceptPc, numRegisters, input).map(MatchResult(_, names))
+
+  /**
+   * Lets a `CaptureMatcher` be used as a pattern-match extractor - `case myMatcher(g1, g2) =>
+   * ...` - mirroring `scala.util.matching.Regex`'s own `unapplySeq`, except a group that never
+   * participated in the match comes back as [[None]] rather than `scala.util.matching.Regex`'s
+   * `null`-in-a-`List` (see [[MatchResult.group]] for why that distinction exists - the same
+   * reasoning applies here). Positional only, one element per numbered group `1..N` - group 0
+   * (the whole match) is never included, the same convention `scala.util.matching.Regex` uses -
+   * `MatchResult.group(name)` (via [[matchWhole]]) still covers named-group access, which
+   * `unapplySeq`'s purely positional binding can't express.
+   */
+  def unapplySeq(input: CharSequence): Option[Seq[Option[String]]] =
+    matchWhole(input).map: result =>
+      (1 to numGroups).map(i => result.group(i).map(span => input.subSequence(span.start, span.end).toString))
 
 object CaptureMatcher:
 

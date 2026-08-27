@@ -105,6 +105,15 @@ result.group("year") // Some((start = 0, end = 4))
 result.group(1) // same span, by number instead of name
 ```
 
+`CaptureMatcher` also works as a `case` pattern (`unapplySeq`), one element per numbered group,
+`None` for a group that didn't participate rather than `scala.util.matching.Regex`'s `null`:
+
+```scala
+"2026-08-27" match
+  case date(year, month, day) => println(s"$year/$month/$day")
+  case _ => println("no match")
+```
+
 ## Status
 
 Early (`0.x`). The parser deliberately supports a subset of `java.util.regex.Pattern`'s syntax —

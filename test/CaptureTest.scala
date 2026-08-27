@@ -94,3 +94,27 @@ class CaptureTest extends munit.FunSuite:
       case Left(_) => ()
       case Right(_) => fail("expected a parse error for an unterminated group")
   }
+
+  // unapplySeq - `case myMatcher(g1, g2) => ...`, per issue #52
+
+  test("unapplySeq lets a CaptureMatcher be used as a case pattern") {
+    val date = m("""(\d{4})-(\d{2})-(\d{2})""")
+    "2026-08-27" match
+      case date(year, month, day) => assertEquals((year, month, day), (Some("2026"), Some("08"), Some("27")))
+      case _ => fail("expected the date pattern to match")
+  }
+
+  test("unapplySeq: non-participating group is None, not null-in-a-List like scala.util.matching.Regex") {
+    val m2 = m("(a)|(b)")
+    "b" match
+      case m2(g1, g2) => assertEquals((g1, g2), (None, Some("b")))
+      case _ => fail("expected the alternation to match")
+  }
+
+  test("unapplySeq: no match is None, doesn't throw") {
+    assertEquals(m("(a)(b)").unapplySeq("ac"), None)
+  }
+
+  test("unapplySeq excludes group 0 (the whole match), same convention as scala.util.matching.Regex") {
+    assertEquals(m("(a)(b)").unapplySeq("ab"), Some(Seq(Some("a"), Some("b"))))
+  }
