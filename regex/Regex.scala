@@ -209,6 +209,18 @@ enum Regex:
    * [[Star]] bodies (loop iterations past the first can never be at position 0 again). Guards
    * `Subset.derive`'s post-derivation strip pass so it's a single cheap check - not a tree
    * walk - for the overwhelming majority of patterns that never use `^`/`\A` at all.
+   *
+   * Deliberately plain structural recursion through each child's own `.hasStartAnchor` (not a
+   * worklist loop): `Subset.stripStartAnchor` re-checks this at every level of its own descent,
+   * relying on it being O(1) once the top-level check has run - which only holds if reaching a
+   * child here forces (and permanently caches, via that child's own `lazy val`) that child's
+   * result too. A worklist loop computing the boolean inline, without ever touching each
+   * child's own `hasStartAnchor`, would lose exactly that cross-node memoization and turn
+   * `stripStartAnchor`'s per-level "cheap check" into a fresh sub-tree walk at every level -
+   * same trade `nullable`/`alphabetBoundaries` above already decline for the same reason, and
+   * (like them) can't use `deepRecursive` either: a `lazy val`'s self-references are bare
+   * `Select`s, not `Apply` nodes, so the macro has nothing to trampoline. Shares their same
+   * pre-existing, accepted stack-depth ceiling as a result.
    */
   @threadUnsafe lazy val hasStartAnchor: Boolean = this match
     case StartAnchor => true

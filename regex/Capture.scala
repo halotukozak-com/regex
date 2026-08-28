@@ -114,17 +114,21 @@ object CaptureMatcher:
       case (Regex.Eps | Regex.Empty | Regex.Chars(_) | Regex.StartAnchor) :: rest => loop(rest, best)
     loop(List(r), 0)
 
-  private def collectNames(r: Regex): Map[String, Int] = r match
-    case Regex.Group(index, Some(name), inner) => collectNames(inner) + (name -> index)
-    case Regex.Group(_, None, inner) => collectNames(inner)
-    case Regex.Concat(a, b) => collectNames(a) ++ collectNames(b)
-    case Regex.Alt(parts) => parts.iterator.map(collectNames).foldLeft(Map.empty)(_ ++ _)
-    case Regex.Inter(parts) => parts.iterator.map(collectNames).foldLeft(Map.empty)(_ ++ _)
-    case Regex.Star(inner) => collectNames(inner)
-    case Regex.Repeat(inner, _, _) => collectNames(inner)
-    case Regex.Compl(inner) => collectNames(inner)
-    case Regex.Look(inner, _) => collectNames(inner)
-    case Regex.Eps | Regex.Empty | Regex.Chars(_) | Regex.StartAnchor => Map.empty
+  /** Like [[numGroups]]: a plain `@tailrec` worklist loop, for the same stack-safety reason. */
+  private def collectNames(r: Regex): Map[String, Int] =
+    @tailrec def loop(pending: List[Regex], acc: Map[String, Int]): Map[String, Int] = pending match
+      case Nil => acc
+      case Regex.Group(index, Some(name), inner) :: rest => loop(inner :: rest, acc + (name -> index))
+      case Regex.Group(_, None, inner) :: rest => loop(inner :: rest, acc)
+      case Regex.Concat(a, b) :: rest => loop(a :: b :: rest, acc)
+      case Regex.Alt(parts) :: rest => loop(parts.toList ::: rest, acc)
+      case Regex.Inter(parts) :: rest => loop(parts.toList ::: rest, acc)
+      case Regex.Star(inner) :: rest => loop(inner :: rest, acc)
+      case Regex.Repeat(inner, _, _) :: rest => loop(inner :: rest, acc)
+      case Regex.Compl(inner) :: rest => loop(inner :: rest, acc)
+      case Regex.Look(inner, _) :: rest => loop(inner :: rest, acc)
+      case (Regex.Eps | Regex.Empty | Regex.Chars(_) | Regex.StartAnchor) :: rest => loop(rest, acc)
+    loop(List(r), Map.empty)
 
   // ---------------------------------------------------------------------------------------
   // NFA compilation - Pike's VM bytecode (Cox, "Regular Expression Matching: the Virtual
@@ -198,13 +202,23 @@ object CaptureMatcher:
         // own `&`/`!`), so CaptureMatcher.parse's input can't contain either.
         throw MatchError(s"unreachable: CaptureMatcher doesn't support $node (never produced by RegexParser.parse)")
 
-    private def compileAlt(branches: List[Regex], next: Int): Int = branches match
-      case Nil => throw MatchError("unreachable: Alt always has >= 2 branches")
-      case single :: Nil => compile(single, next)
-      case head :: tail =>
-        val headEntry = compile(head, next)
-        val restEntry = compileAlt(tail, next)
-        emit(Inst.Split(headEntry, restEntry))
+    /**
+     * A plain `@tailrec` loop, not `deepRecursive`: recursion depth here tracks branch *count*,
+     * not tree depth (an `Alt` isn't capped the way `Regex.repeat` caps `Repeat` bounds, so a
+     * pattern spelling out enough `|`-separated branches needs the same stack safety `compile`'s
+     * tree recursion does) - but unlike that one, this shape flattens for free: walking
+     * `branches.reverse` and folding `Split`s from the lowest-priority branch backward builds
+     * the exact same nested-`Split` structure the natural `head :: compileAlt(tail, next)`
+     * recursion would (`Split(b1, Split(b2, ..., Split(bn-1, bn)))`), just accumulated instead
+     * of nested - so there's no `deepRecursive` dispatch cost to pay per branch either.
+     */
+    private def compileAlt(branches: List[Regex], next: Int): Int =
+      @tailrec def loop(remaining: List[Regex], acc: Int): Int = remaining match
+        case Nil => acc
+        case head :: rest => loop(rest, emit(Inst.Split(compile(head, next), acc)))
+      branches.reverse match
+        case Nil => throw MatchError("unreachable: Alt always has >= 2 branches")
+        case last :: rest => loop(rest, compile(last, next))
 
     private def compileStar(inner: Regex, next: Int): Int =
       val splitPc = reserve()
