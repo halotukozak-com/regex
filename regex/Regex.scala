@@ -84,8 +84,23 @@ enum Regex:
   /** Concatenation `a · b`. */
   case Concat private[Regex] (a: Regex, b: Regex)
 
-  /** Alternation. Stored as a [[Set]] for ACI normalization. Always size ≥ 2. */
-  case Alt private[Regex] (parts: Set[Regex])
+  /**
+   * Alternation. Always size ≥ 2. `parts` is an [[AltBranches]], not a plain [[Set]] like
+   * [[Inter]]: it still needs Set-like equality/hashing for ACI normalization (two `Alt`s built
+   * from the same branches must be `==` and hash identically regardless of order, or
+   * `Subset.isEmpty`'s visited-state dedup - and the finite-derivative-state-space guarantee it
+   * relies on - would silently stop collapsing equivalent states) - see [[AltBranches]]'s own
+   * `equals`/`hashCode`. But *iteration* order matters too, unlike `Inter`: it's a pattern's only
+   * record of alternation branch priority (`a|b` prefers `a`), which every no-backtracking
+   * submatch algorithm needs for leftmost-first disambiguation (see `Capture.scala`) and which
+   * nothing before that ever needed to preserve. `Regex.alt`/`|` build it in exactly the order
+   * they're given (deduplicated, first occurrence kept) rather than normalizing it away.
+   *
+   * (A Scala 3 enum case can't carry its own `equals`/`hashCode` override directly - only plain
+   * classes can - hence `AltBranches` being a separate wrapper type instead of `Alt`'s stored
+   * field simply being an order-preserving `Vector[Regex]` with the override inline.)
+   */
+  case Alt private[Regex] (parts: AltBranches)
 
   /** Intersection. Stored as a [[Set]] for ACI normalization. Always size ≥ 2. */
   case Inter private[Regex] (parts: Set[Regex])
@@ -207,8 +222,8 @@ enum Regex:
     case Look(r, _) => r.hasStartAnchor
     case Group(_, _, inner) => inner.hasStartAnchor
 
-  /** Alternation: `this | other`. */
-  infix def |(other: Regex): Regex = Regex.alt(Set(this, other))
+  /** Alternation: `this | other`, preferring `this` - see [[Regex.Alt]]'s doc comment. */
+  infix def |(other: Regex): Regex = Regex.alt(Vector(this, other))
 
   /** Intersection: `this ∩ other`. */
   infix def &(other: Regex): Regex = Regex.inter(Set(this, other))
@@ -249,6 +264,33 @@ enum Regex:
       case _ if lo == 1 && hi == 1 => this
       case _ => Regex.Repeat(this, lo, hi)
 
+/**
+ * [[Regex.Alt]]'s branch container - see its doc comment for why this exists instead of `Alt`
+ * simply storing a `Vector[Regex]`/`Set[Regex]` directly. Stores two genuinely immutable views
+ * built together, once, from the same order-preserving dedup pass: `toVector` (insertion-order,
+ * deduplicated - what `iterator` and every inherited `Iterable` operation like `exists`/`map`/
+ * `toList` use) and `asSet` (the same elements, for `equals`/`hashCode` - Set semantics are
+ * order-independent, so ACI normalization and `Subset.isEmpty`'s visited-state dedup are
+ * unaffected by which order two equivalent `Alt`s happen to store their branches in). The
+ * `mutable.LinkedHashSet` doing the actual dedup work in [[AltBranches.apply]] below is a
+ * construction-time-only local builder, discarded once `toVector`/`asSet` are snapshotted from
+ * it - `AltBranches` itself holds no mutable state, matching every other node in this immutable
+ * tree (see `Regex`'s own cached `hashCode` above, which relies on that immutability).
+ */
+final class AltBranches private[regex] (override val toVector: Vector[Regex], private val asSet: Set[Regex])
+  extends Iterable[Regex]:
+  def iterator: Iterator[Regex] = toVector.iterator
+
+  override def equals(that: Any): Boolean = that match
+    case that: AltBranches => asSet == that.asSet
+    case _ => false
+  override lazy val hashCode: Int = asSet.hashCode
+
+private[regex] object AltBranches:
+  def apply(xs: IterableOnce[Regex]): AltBranches =
+    val deduped = mutable.LinkedHashSet.from(xs)
+    new AltBranches(deduped.toVector, deduped.toSet)
+
 object Regex:
 
   extension (a: Regex)
@@ -272,24 +314,31 @@ object Regex:
 
   def apply(set: CharSet): Regex = if set.isEmpty then Empty else Chars(set)
 
-  /** Alternation of a collection. */
+  /**
+   * Alternation of a collection, preferring earlier elements - see [[Regex.Alt]]'s doc comment.
+   * Builds `flat` straight into an [[AltBranches]] (order-preserving dedup, one pass) instead of
+   * `.toVector.distinct` followed by a separate `.toSet` later for `equals`/`hashCode`: the
+   * latter would build two different set-like views of the same elements where one suffices.
+   */
   def alt(parts: Iterable[Regex]): Regex =
-    val flat = parts.iterator
-      .flatMap:
-        case Alt(p) => p
-        case Empty => Iterator.empty
-        case r => Iterator.single(r)
-      .toSet
+    val flat = AltBranches(parts.iterator.flatMap {
+      case Alt(p) => p
+      case Empty => Iterator.empty
+      case r => Iterator.single(r)
+    })
     if flat.isEmpty then Empty
     else if flat.sizeIs == 1 then flat.head
     else
-      val (chars, rest) = flat.partitionIsInstance[Chars]
-      val merged: Set[Regex] =
-        if chars.sizeIs <= 1 then flat
-        else
-          val union = chars.iterator.map(_.set).foldLeft(CharSet.empty)(_ union _)
-          if union.isEmpty then rest else rest + Chars(union)
-      if merged.sizeIs == 1 then merged.head else Alt(merged)
+      val (chars, rest) = flat.toVector.partitionIsInstance[Chars]
+      // Where the merged Chars node lands among `rest` doesn't affect priority: two bare Chars
+      // alternatives (no Group inside - a Group would make this a Group node, not a Chars leaf)
+      // can never differ in captures, and a single input position can only ever satisfy one of
+      // them anyway, so which "wins" is unobservable either way.
+      if chars.sizeIs <= 1 then Alt(flat)
+      else
+        val union = chars.iterator.map(_.set).foldLeft(CharSet.empty)(_ union _)
+        val merged = if union.isEmpty then rest else rest :+ Chars(union)
+        if merged.sizeIs == 1 then merged.head else Alt(AltBranches(merged))
 
   /** Intersection of a collection. */
   def inter(parts: Iterable[Regex]): Regex =
@@ -545,9 +594,13 @@ object Regex:
           case RegexTag.Look => Look(nodes(arg1), arg2 != 0)
           case RegexTag.Repeat => Repeat(nodes(arg1), arg2, arg3)
           case RegexTag.Group => Group(arg2, if arg3 < 0 then None else Some(groupNames(arg3)), nodes(arg1))
-          case tag @ (RegexTag.Alt | RegexTag.Inter) =>
-            val parts = (arg1 until arg1 + arg2).map(idx => nodes(partsFlat(idx))).toSet
-            if tag == RegexTag.Alt then Alt(parts) else Inter(parts)
+          case RegexTag.Alt =>
+            // Not `.toSet`: `encode` above lays `partsFlat` out in `Alt.parts`'s own order
+            // (`parts.foreach` over the now order-preserving `AltBranches`), so reading it back
+            // as an `IndexedSeq` naturally round-trips that order - see [[Regex.Alt]]'s doc.
+            Alt(AltBranches((arg1 until arg1 + arg2).map(idx => nodes(partsFlat(idx))).toVector))
+          case RegexTag.Inter =>
+            Inter((arg1 until arg1 + arg2).map(idx => nodes(partsFlat(idx))).toSet)
       }
       nodes(n - 1)
 

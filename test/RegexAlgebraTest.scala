@@ -42,7 +42,7 @@ class RegexAlgebraTest extends munit.FunSuite:
     val sB = rB.star
     val sC = rC.star
     sA | sB | sC match
-      case Alt(parts) => assertEquals(parts, Set(sA, sB, sC))
+      case Alt(parts) => assertEquals(parts.toSet, Set(sA, sB, sC))
       case other => fail(s"not flattened Alt: $other")
   }
 

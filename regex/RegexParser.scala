@@ -278,7 +278,11 @@ object RegexParser:
             a.concat(a.star)
           case '?' =>
             pos += 1
-            Eps | a
+            // `a` first, not `Eps | a`: `Regex.alt`/`|` preserve the order they're given (see
+            // Regex.Alt's doc) precisely so a capture-aware consumer can tell "prefer entering
+            // `a`" (this quantifier's greedy default) from "prefer skipping it" - order that was
+            // unobservable before any such consumer existed, but is now load-bearing.
+            a | Eps
           case '{' =>
             pos += 1
             parseRepeat(a)
