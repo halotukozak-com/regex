@@ -30,7 +30,7 @@ Published to Maven Central under `com.halotukozak`. Requires Scala 3.
 ### scala-cli
 
 ```scala
-//> using scala 3.9.0-RC6
+//> using scala 3.9.0
 //> using dep com.halotukozak::regex::0.2.0
 ```
 
@@ -44,7 +44,7 @@ libraryDependencies += "com.halotukozak" %% "regex" % "0.2.0"
 ### mill
 
 ```scala
-def scalaVersion = "3.9.0-RC6"
+def scalaVersion = "3.9.0"
 def mvnDeps = Seq(mvn"com.halotukozak::regex::0.1.0")
 ```
 
