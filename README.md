@@ -31,14 +31,14 @@ Published to Maven Central under `com.halotukozak`. Requires Scala 3.
 
 ```scala
 //> using scala 3.9.0-RC6
-//> using dep com.halotukozak::regex::0.1.0
+//> using dep com.halotukozak::regex::0.2.0
 ```
 
 ### sbt
 
 ```scala
 scalaVersion := "3.9.0-RC6"
-libraryDependencies += "com.halotukozak" %% "regex" % "0.1.0"
+libraryDependencies += "com.halotukozak" %% "regex" % "0.2.0"
 ```
 
 ### mill
