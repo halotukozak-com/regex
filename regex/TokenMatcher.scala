@@ -87,19 +87,40 @@ final class TokenMatcher @publicInBinary private (
   private val boundaries: Array[Int],
   private val transitions: Array[Int],
   private val accept: Array[Int],
+  private val fastAscii: Array[Int],
 ):
   private def numPartitions: Int = boundaries.length
 
   /**
    * Match a token starting at `start` in `input`.
    *
-   * @return `Some((priority, end))` where `priority` is the index of the winning
-   *         pattern and `end` is the exclusive end of the longest match. `None` if
-   *         no pattern matches any (possibly empty) prefix at `start`.
+   * Returns the bare named tuple (no `Option` wrapper) to avoid allocating a `Some` on every
+   * call -- `matchAt` is the innermost hot-path operation, called once per code point during
+   * tokenization, and a lexer racing many short/single-character patterns (the common case for
+   * punctuation-heavy grammars) spends most of its time in calls that return almost immediately.
+   * Test with `== null` (or match against `null`) for absence, same as any other `X | Null`.
+   *
+   * Checks `fastAscii` first: for an ASCII start character whose one-character match is
+   * unambiguously the *longest* possible one (no live pattern can extend it further -- see
+   * `fastAscii`'s doc comment), this returns straight from a single array read instead of
+   * running the general derivative-DFA walk below (`codePointAt` decode, binary-search
+   * partition classification, transition/accept array reads, and -- for single-character
+   * patterns specifically -- a second loop iteration just to confirm no continuation exists).
+   * Falls through to the general walk for every other case, including non-ASCII starts and
+   * ASCII starts where a longer match might still be possible (e.g. `-` when `->` is also a
+   * pattern), so this is purely an optimization: identical results either way.
    */
-  def matchAt(input: CharSequence, start: Int): Option[(priority: Int, end: Int)] =
+  def matchAt(input: CharSequence, start: Int): (priority: Int, end: Int) | Null =
+    val fastPriority =
+      if start < input.length then
+        val c0 = input.charAt(start)
+        if c0 < 128 then fastAscii(c0) else -1
+      else -1
+    if fastPriority >= 0 then (priority = fastPriority, end = start + 1) else matchAtSlow(input, start)
+
+  private def matchAtSlow(input: CharSequence, start: Int): (priority: Int, end: Int) | Null =
     @tailrec
-    def loop(state: Int, pos: Int, bestPriority: Int, bestEnd: Int): Option[(priority: Int, end: Int)] =
+    def loop(state: Int, pos: Int, bestPriority: Int, bestEnd: Int): (priority: Int, end: Int) | Null =
       if pos >= input.length then endResult(bestPriority, bestEnd)
       else
         val c = Character.codePointAt(input, pos)
@@ -110,7 +131,7 @@ final class TokenMatcher @publicInBinary private (
           accept(next) match
             case acc if acc >= 0 => loop(next, nextPos, acc, nextPos)
             case _ => loop(next, nextPos, bestPriority, bestEnd)
-    def endResult(priority: Int, end: Int) = if end >= 0 then Some((priority = priority, end = end)) else None
+    def endResult(priority: Int, end: Int) = if end >= 0 then (priority = priority, end = end) else null
     val initialAccept = accept(0)
     loop(0, start, initialAccept, if initialAccept >= 0 then start else -1)
 
@@ -120,7 +141,7 @@ final class TokenMatcher @publicInBinary private (
       .codePointStarts(input, from)
       .map(start => (start, matchAt(input, start)))
       .collectFirst:
-        case (start, Some((priority, end))) if end > start => (start, priority, end)
+        case (start, m) if m != null && m.end > start => (start, m.priority, m.end)
 
 object TokenMatcher:
 
@@ -191,10 +212,42 @@ object TokenMatcher:
 
       if maxStates < 1 then break(Left(StateSpaceLimitExceeded(maxStates)))
       val (transitions, accept) = loop(Queue(patterns), Map(patterns -> 0), Vector.empty, Vector.empty)
-      Right(new TokenMatcher(boundaries, transitions, accept))
+      val numPartitions = boundaries.length
+      val fastAscii = buildFastAscii(boundaries, transitions, accept, numPartitions)
+      Right(new TokenMatcher(boundaries, transitions, accept, fastAscii))
 
   private def firstNullable(state: Seq[Subset]): Int =
     state.iterator.zipWithIndex.collectFirst { case (sub, idx) if sub.nullable => idx }.getOrElse(-1)
+
+  /**
+   * Precomputes, for every ASCII code point, whether matching it as a single character from the
+   * initial state (0) is unambiguously the *longest* possible match -- i.e. no live pattern could
+   * extend that one-character match further. That's true exactly when: (a) consuming the
+   * character from state 0 lands on a live state, (b) that state is itself accepting (some
+   * pattern's language contains just that one character), and (c) that state has no live
+   * outgoing transitions at all (every continuation is dead, so no longer match is reachable from
+   * here). Under those three conditions `matchAt` can return `(priority, start + 1)` straight from
+   * this table instead of running the general derivative-DFA walk -- see `matchAt`'s doc comment.
+   *
+   * Restricted to ASCII (0-127) both because that's the overwhelmingly common case for
+   * punctuation/operator tokens in real grammars, and to keep this a flat `Array[Int]` sized by a
+   * compile-time constant rather than by the pattern set's alphabet.
+   *
+   * @return array of length 128; `fastAscii(c)` is the winning pattern's priority, or -1 if `c`
+   *         doesn't satisfy the three conditions above (matchAt must fall back to the general walk).
+   */
+  private def buildFastAscii(boundaries: Array[Int], transitions: Array[Int], accept: Array[Int], numPartitions: Int)
+    : Array[Int] =
+    Array.tabulate(128): c =>
+      val next = transitions(partitionIndex(boundaries, c))
+      if next < 0 then -1
+      else
+        val priority = accept(next)
+        if priority < 0 then -1
+        else
+          val rowStart = next * numPartitions
+          val hasLiveContinuation = (0 until numPartitions).exists(p => transitions(rowStart + p) >= 0)
+          if hasLiveContinuation then -1 else priority
 
   /** Largest `i` with `boundaries(i) <= c`; well-defined since `boundaries(0) == 0 <= c` always. */
   private def partitionIndex(boundaries: Array[Int], c: Int): Int =
@@ -216,5 +269,12 @@ object TokenMatcher:
   /** Embeds the already-built DFA table as `Array[Int]` literals - no `Regex`/`Subset` involved. */
   given ToExpr[TokenMatcher]:
     def apply(m: TokenMatcher)(using Quotes): Expr[TokenMatcher] =
-      '{ TokenMatcher(${ Expr(m.boundaries) }, ${ Expr(m.transitions) }, ${ Expr(m.accept) }) }
+      '{
+        TokenMatcher(
+          ${ Expr(m.boundaries) },
+          ${ Expr(m.transitions) },
+          ${ Expr(m.accept) },
+          ${ Expr(m.fastAscii) },
+        )
+      }
   // $COVERAGE-ON$
