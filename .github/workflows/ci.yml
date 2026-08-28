@@ -137,7 +137,14 @@ jobs:
           -f 1 -wi 3 -i 5 -w 300ms -r 300ms -rf json -rff "$GITHUB_WORKSPACE/current-bench.json"
       - name: Run benchmarks on main
         # Reuses the PR's bench/ harness (and project.scala, for identical compiler
-        # settings) against main's library sources, so only regex/ actually differs.
+        # settings) against main's library sources, so only regex/ actually differs -
+        # *except* when the PR itself changes an API its own bench/ exercises (a new
+        # benchmark for new functionality, a changed signature for a perf change): main
+        # doesn't have that change yet, so this step's compile can legitimately fail.
+        # That's not a bug in the PR, just this comparison being inapplicable to it -
+        # continue-on-error keeps that non-fatal, matching this job's informational-only
+        # status; Compare below degrades to current-branch-only numbers when it happens.
+        continue-on-error: true
         run: |
           git worktree add /tmp/main-baseline origin/main
           rm -rf /tmp/main-baseline/bench
