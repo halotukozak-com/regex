@@ -36,7 +36,7 @@ jobs:
           scala-cli --power doc . --exclude "bench/**" -- \
           -project "regex" \
           -project-version ${{ github.ref_name }} \
-          -project-footer "halotukozak/regex" \
+          -project-footer "made with ❤️ and coffee" \
           -social-links:github::https://github.com/halotukozak/regex \
           -snippet-compiler:compile \
           -source-links:"src=github://halotukozak/regex?tag=${{ github.ref_name }}" \
