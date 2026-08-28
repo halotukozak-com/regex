@@ -67,24 +67,13 @@ object Subset:
     r match
       case Eps | Empty | Chars(_) | StartAnchor => r
       case Concat(a, b) => eraseGroups(a).concat(eraseGroups(b))
-      case Alt(parts) => Regex.alt(eraseGroupsAll(parts.toList, Nil))
-      case Inter(parts) => Regex.inter(eraseGroupsAll(parts.toList, Nil))
+      case Alt(parts) => Regex.alt(parts.toList.map(eraseGroups))
+      case Inter(parts) => Regex.inter(parts.map(eraseGroups))
       case Star(inner) => eraseGroups(inner).star
       case Repeat(inner, lo, hi) => eraseGroups(inner).repeat(lo, hi)
       case Compl(inner) => !eraseGroups(inner)
       case Look(inner, positive) => Regex.lookahead(eraseGroups(inner), positive)
       case Group(_, _, inner) => eraseGroups(inner)
-
-  /**
-   * Like [[deriveAll]]/[[deriveAllConcat]]: a plain `@tailrec` loop over `parts` rather than
-   * `parts.map(eraseGroups)`, since a self-call inside the closure `.map` passes wouldn't be
-   * something `deepRecursive` can trampoline (see its own docs) - each part instead re-enters
-   * `eraseGroups` as a fresh top-level call.
-   */
-  @tailrec
-  private def eraseGroupsAll(parts: List[Regex], acc: List[Regex]): List[Regex] = parts match
-    case Nil => acc
-    case head :: tail => eraseGroupsAll(tail, eraseGroups(head) :: acc)
 
   /** Parses a pattern into a [[Subset]]. */
   def parse(pattern: String): Either[RegexParseError, Subset] = RegexParser.parse(pattern).map(of)
@@ -179,7 +168,7 @@ object Subset:
          */
         case Concat(Look(r, positive), b) =>
           val bc = b.derive(c)
-          if positive then if r.nullable then bc else bc & (r.derive(c).concat(Regex.all))
+          if positive then if r.nullable then bc else bc & r.derive(c).concat(Regex.all)
           else if r.nullable then Empty
           else bc & !r.derive(c).concat(Regex.all)
 
@@ -197,13 +186,13 @@ object Subset:
          * majority) on the cheaper generic path below, sharing `b` instead of duplicating it.
          */
         case Concat(Alt(parts), b) if parts.exists(hasLeadingLook) =>
-          Regex.alt(deriveAllConcat(parts.toList, b, c, Nil))
+          Regex.alt(parts.toVector.map(_.concat(b).derive(c)))
         case Concat(a, b) =>
           val acb = a.derive(c).concat(b)
           if a.nullable then acb | b.derive(c)
           else acb
-        case Alt(parts) => Regex.alt(deriveAll(parts.toList, c, Nil))
-        case Inter(parts) => Regex.inter(deriveAll(parts.toList, c, Nil))
+        case Alt(parts) => Regex.alt(parts.toVector.map(_.derive(c)))
+        case Inter(parts) => Regex.inter(parts.map(_.derive(c)))
         case s @ Star(inner) => inner.derive(c).concat(s)
 
         /**
@@ -225,37 +214,6 @@ object Subset:
 
         /** Never reached: [[Subset.of]] erases every `Group` before anything reaches here. */
         case g: Group => throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): $g")
-
-  /**
-   * Plain `@tailrec` loops, not `TailRec`-trampolined: unlike `deriveImpl`'s tree recursion
-   * (whose depth tracks regex structure and needs the heap-based trampoline for stack
-   * safety), these only walk a flat list — `parts`/`reps` — whose length is bounded by
-   * branch/partition count, not tree depth. Composing them through `tailcall`/`for` would
-   * still be stack-safe but pays for a `Cont` continuation-object allocation per list
-   * element; forcing each `deriveImpl(...).result` eagerly here avoids that allocation.
-   *
-   * Trade-off: each forced `.result` is a real (non-tail) JVM call into `deriveImpl`, so an
-   * `Alt`/`Inter` node nested inside another `Alt`/`Inter`'s part now grows the JVM call
-   * stack by one frame per nesting level, instead of being folded into the single top-level
-   * trampoline as before. Verified this stays within the JVM's minimum stack size
-   * (`-Xss208k`) for the worst case the library's own `maxRepeatBound` allows (one `{0,1000}`
-   * quantifier); deliberately-adversarial nesting far beyond that bound can still overflow —
-   * same pre-existing ceiling `Regex#hashCode`/`nullable`/`alphabetBoundaries` already have,
-   * since those are also plain structural recursion, not trampolined.
-   */
-  @tailrec
-  private def deriveAll(parts: List[Regex], c: Int, acc: List[Regex]): List[Regex] = parts match
-    case Nil => acc
-    case head :: tail => deriveAll(tail, c, head.derive(c) :: acc)
-
-  /**
-   * Like [[deriveAll]], but concatenates each part with `b` before deriving - see the
-   * `Concat(Alt(parts), b)` case above.
-   */
-  @tailrec
-  private def deriveAllConcat(parts: List[Regex], b: Regex, c: Int, acc: List[Regex]): List[Regex] = parts match
-    case Nil => acc
-    case head :: tail => deriveAllConcat(tail, b, c, head.concat(b).derive(c) :: acc)
 
   /**
    * `reps` is `Array[Int]`, not `List[Int]`: `List[Int]` boxes every element as a
@@ -292,22 +250,24 @@ object Subset:
    * one node deriving it, but `^`/`\A` has to die *globally*, in parts of the tree the current
    * derivative step never visits at all — a single recursive sweep over the whole result is the
    * simplest way to guarantee that. `hasStartAnchor` keeps this a single cheap check (not a tree
-   * walk) for the overwhelming majority of patterns that never use `^`/`\A`.
+   * walk) for the overwhelming majority of patterns that never use `^`/`\A` - so only a pattern
+   * that actually contains one ever pays for the `deepRecursive` trampoline below.
    */
   private def stripStartAnchor(r: Regex): Regex =
     if !r.hasStartAnchor then r
     else
-      r match
-        case StartAnchor => Empty
-        case Concat(a, b) => stripStartAnchor(a).concat(stripStartAnchor(b))
-        case Alt(parts) => Regex.alt(parts.map(stripStartAnchor))
-        case Inter(parts) => Regex.inter(parts.map(stripStartAnchor))
-        case Star(inner) => stripStartAnchor(inner).star
-        case Repeat(inner, lo, hi) => stripStartAnchor(inner).repeat(lo, hi)
-        case Compl(inner) => !stripStartAnchor(inner)
-        case Look(inner, positive) => Regex.lookahead(stripStartAnchor(inner), positive)
-        case g: Group => throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): $g")
-        case _ => r
+      deepRecursive:
+        r match
+          case StartAnchor => Empty
+          case Concat(a, b) => stripStartAnchor(a).concat(stripStartAnchor(b))
+          case Alt(parts) => Regex.alt(parts.toVector.map(stripStartAnchor))
+          case Inter(parts) => Regex.inter(parts.map(stripStartAnchor))
+          case Star(inner) => stripStartAnchor(inner).star
+          case Repeat(inner, lo, hi) => stripStartAnchor(inner).repeat(lo, hi)
+          case Compl(inner) => !stripStartAnchor(inner)
+          case Look(inner, positive) => Regex.lookahead(stripStartAnchor(inner), positive)
+          case g: Group => throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): $g")
+          case _ => r
 
   /**
    * Returns one representative code point per equivalence class of the alphabet
