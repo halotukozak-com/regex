@@ -76,7 +76,7 @@ jobs:
             ${{ runner.os }}-mill-
       - name: Benchmark the PR branch
         run: >
-          ./mill bench.runJmh --
+          ./mill bench.runJmh
           '.*' -f 1 -wi 3 -i 5 -w 300ms -r 300ms -rf json -rff "$GITHUB_WORKSPACE/current-bench.json"
       - name: Benchmark main
         # Reuses the PR's bench/ sources against main's library — so only src/
@@ -89,7 +89,7 @@ jobs:
           rm -rf /tmp/main-baseline/bench
           cp -r bench /tmp/main-baseline/bench
           cd /tmp/main-baseline
-          ./mill bench.runJmh -- \
+          ./mill bench.runJmh \
             '.*' -f 1 -wi 3 -i 5 -w 300ms -r 300ms -rf json -rff "$GITHUB_WORKSPACE/main-bench.json"
       - name: Compare
         run: |
