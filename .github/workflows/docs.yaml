@@ -27,30 +27,32 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Setup coursier cache
-        uses: coursier/cache-action@v8.1
-      - name: Setup scala-cli
-        uses: VirtusLab/scala-cli-setup@v1
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: 21
+          distribution: 'temurin'
+      - name: Cache Mill dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/coursier
+            ~/.cache/mill
+          key: ${{ runner.os }}-mill-${{ hashFiles('build.mill') }}
+          restore-keys: |
+            ${{ runner.os }}-mill-
       - name: Generate documentation
-        run: |
-          scala-cli --power doc . --exclude "bench/**" -- \
-          -project "regex" \
-          -project-version ${{ github.ref_name }} \
-          -project-footer "made with ❤️ and coffee" \
-          -social-links:github::https://github.com/halotukozak/regex \
-          -snippet-compiler:compile \
-          -source-links:"src=github://halotukozak/regex?tag=${{ github.ref_name }}" \
-          -revision:${{ github.ref_name }}
+        run: ./mill jvm.docJar
       - name: Inject Umami analytics
         run: |
-          find scala-doc -name '*.html' -exec sed -i \
+          find out/jvm/docJar.dest/docs -name '*.html' -exec sed -i \
             's#</head>#<script defer src="https://cloud.umami.is/script.js" data-website-id="f15f9eef-35ab-4b2a-ba14-f7e079e7de28"></script></head>#' {} +
       - name: Setup Pages
         uses: actions/configure-pages@v6
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5
         with:
-          path: 'scala-doc'
+          path: 'out/jvm/docJar.dest/docs'
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5

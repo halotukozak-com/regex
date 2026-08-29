@@ -37,7 +37,7 @@ Published to Maven Central under `com.halotukozak`. Requires Scala 3.
 ### sbt
 
 ```scala
-scalaVersion := "3.9.0-RC6"
+scalaVersion := "3.9.0"
 libraryDependencies += "com.halotukozak" %% "regex" % "0.2.0"
 ```
 
@@ -45,7 +45,7 @@ libraryDependencies += "com.halotukozak" %% "regex" % "0.2.0"
 
 ```scala
 def scalaVersion = "3.9.0"
-def mvnDeps = Seq(mvn"com.halotukozak::regex::0.1.0")
+def mvnDeps = Seq(mvn"com.halotukozak::regex::0.2.0")
 ```
 
 ## Quickstart

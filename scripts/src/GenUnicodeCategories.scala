@@ -1,21 +1,20 @@
 /**
- * Regenerates `regex/UnicodeCategories.scala` from the host JDK's `java.lang.Character.getType`.
+ * Regenerates `src/UnicodeCategories.scala` from the host JDK's `java.lang.Character.getType`.
  *
- * Run: `scala-cli run scripts/GenUnicodeCategories.scala > regex/UnicodeCategories.scala`
+ * Run: `./mill scripts.runMain genUnicodeCategories > src/UnicodeCategories.scala`
+ * then `./mill mill.scalalib.scalafmt/reformatAll` (the raw output is unwrapped).
  *
- * Deliberately lives outside `regex/`, excluded from the library's own build the same way the
- * `bench` directory is (see the `--exclude` patterns for both directories in
- * `.github/workflows/ci.yml`) - this script calls `java.lang.Character` directly, a JVM-only
- * API the library's own sources may never depend on (see the generated file's own doc comment
- * for why). Only this script's *output* is checked in; the script itself never runs as part of
- * building, testing, or publishing the library.
+ * Its own `scripts` module — never compiled into, tested with, or published as part of the
+ * library. It calls `java.lang.Character` directly, a JVM-only API the library's own sources
+ * never depend on (see the generated file's own doc comment for why); only this script's
+ * *output* is checked in.
  *
  * Re-run this whenever the checked-in `UnicodeCategories.scala` needs auditing, or regenerating
- * against a different JDK's bundled Unicode version - it always reproduces that file byte for
- * byte from the running JDK's own `Character.getType` classification, so there's never a
- * question of whether the checked-in ranges still match what generated them (previously they
- * didn't have a reproducible source at all - this script replaces a one-off, discarded version
- * of itself that produced the ranges currently checked in).
+ * against a different JDK's bundled Unicode version - it always reproduces that data from the
+ * running JDK's own `Character.getType` classification, so there's never a question of whether
+ * the checked-in ranges still match what generated them (previously they didn't have a
+ * reproducible source at all - this script replaces a one-off, discarded version of itself
+ * that produced the ranges currently checked in).
  */
 @main def genUnicodeCategories(): Unit =
   // Category codes assigned by `java.lang.Character`'s `getType`, keyed by the two-letter
