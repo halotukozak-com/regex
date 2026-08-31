@@ -44,8 +44,7 @@ build/
 .bsp/
 .scala-build/
 .scala-doc/
-.scoverage/*
-!.scoverage/report.sc
+.scoverage/
 scala-doc
 .metals/
 
