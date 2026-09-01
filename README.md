@@ -114,6 +114,30 @@ result.group(1) // same span, by number instead of name
   case _ => println("no match")
 ```
 
+### Tokenizing
+
+`TokenMatcher` compiles a priority-ordered list of patterns into a single longest-match DFA —
+useful for building a lexer directly, not just checking that one token rule doesn't shadow
+another:
+
+```scala
+import halotukozak.regex.tokenMatcher
+
+// Patterns are parsed and compiled into the DFA at compile time; earlier patterns win ties.
+val token = tokenMatcher("if", "[a-zA-Z_][a-zA-Z0-9_]*")
+
+token.matchAt("if", 0) // (priority = 0, end = 2) - the keyword wins
+token.matchAt("ifx", 0) // (priority = 1, end = 3) - falls through to the identifier rule
+token.matchAt("123", 0) // null - no pattern matches at this position
+```
+
+`matchAt` returns a bare named tuple (or `null`) instead of `Option`, since it's the hot-path
+call made once per code point during tokenization; `findFirst` scans forward for the next match
+instead of anchoring at a fixed position. `TokenMatcher.fromRegexes`/`fromSubsets` build the same
+DFA from patterns not known until runtime (e.g. loaded from a config file); the
+`fromRegexesBounded`/`fromSubsetsBounded` variants cap DFA construction the same way
+`Subset.subsetBounded` caps containment checks, for untrusted pattern lists.
+
 ## Status
 
 Early (`0.x`). The parser deliberately supports a subset of `java.util.regex.Pattern`'s syntax —
