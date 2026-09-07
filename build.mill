@@ -74,7 +74,7 @@ object `package` extends Module:
       developers = Seq(Developer("halotukozak", "Bartłomiej Kozak", "https://github.com/halotukozak")),
     )
 
-    def mvnDeps = Seq(mvn"com.halotukozak::commons::0.1.2")
+    def mvnDeps = Seq(mvn"com.halotukozak::commons::0.3.0")
 
   object jvm extends Shared with ScoverageModule:
     def scoverageVersion = "2.5.2"
