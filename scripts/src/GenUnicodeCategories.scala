@@ -16,7 +16,7 @@
  * reproducible source at all - this script replaces a one-off, discarded version of itself
  * that produced the ranges currently checked in).
  */
-@main def genUnicodeCategories(): Unit =
+@main def genUnicodeCategories(): Unit = {
   // Category codes assigned by `java.lang.Character`'s `getType`, keyed by the two-letter
   // Unicode General_Category alias `java.util.regex.Pattern` itself uses for `\p{Lu}` etc.
   // `Character.UNASSIGNED` ("Cn") is deliberately excluded - see the generated file's own doc
@@ -140,3 +140,4 @@
        |  def get(name: String): Option[CharSet] = oneLetter.get(name).orElse(twoLetter.get(name))
        |""".stripMargin,
   )
+}
