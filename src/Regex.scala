@@ -306,13 +306,12 @@ private[regex] object AltBranches:
 object Regex:
 
   extension (a: Regex)
-    infix def concat(b: Regex): Regex = deepRecursive:
-      (a, b) match
-        case (Empty, _) | (_, Empty) => Empty
-        case (Eps, x) => x
-        case (x, Eps) => x
-        case (Concat(x, y), z) => Concat(x, y.concat(z))
-        case _ => Concat(a, b)
+    infix def concat(b: Regex): Regex = deepRecursive((a, b) match
+      case (Empty, _) | (_, Empty) => Empty
+      case (Eps, x) => x
+      case (x, Eps) => x
+      case (Concat(x, y), z) => Concat(x, y.concat(z))
+      case _ => Concat(a, b))
 
   /**
    * Upper bound on quantifier bounds accepted by [[repeat]]. `Repeat` itself stays O(1)
@@ -484,7 +483,7 @@ object Regex:
      * `index` doubles as a dedup cache: a subtree reachable from multiple places in the tree
      * (e.g. a repeated alternative) is encoded only once.
      */
-    def encode(r: Regex): Encoded =
+    def encode(r: Regex): Encoded = {
       import Step.*
       val index = mutable.Map.empty[Regex, Int]
       val tags = mutable.ArrayBuffer.empty[RegexTag]
@@ -573,6 +572,7 @@ object Regex:
         .flatMap(i => Iterator(tags(i).ordinal, arg1(i), arg2(i), arg3(i)))
         .mkString(",")
       Encoded(nodesPart, partsFlat.mkString(","), charSets.toIndexedSeq, groupNames.toIndexedSeq)
+    }
 
   /**
    * Reconstructs a `Regex` from an [[RegexEncoder.Encoded]] value: a single forward pass builds
@@ -585,7 +585,7 @@ object Regex:
       partsFlatPart: String,
       charSets: IndexedSeq[CharSet],
       groupNames: IndexedSeq[String],
-    ): Regex =
+    ): Regex = {
       val nodeInts = nodesPart.split(',').map(_.toInt)
       val partsFlat = if partsFlatPart.isEmpty then Array.empty[Int] else partsFlatPart.split(',').map(_.toInt)
 
@@ -615,6 +615,7 @@ object Regex:
             Inter((arg1 until arg1 + arg2).map(idx => nodes(partsFlat(idx))).toSet)
       }
       nodes(n - 1)
+    }
 
   /**
    * Embeds the value's already-computed [[RegexEncoder.Encoded]] shape, reconstructed by

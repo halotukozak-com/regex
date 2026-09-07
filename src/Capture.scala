@@ -269,7 +269,7 @@ object CaptureMatcher:
     pos: Int,
     input: CharSequence,
     acceptPc: Int,
-  ): ClosureResult =
+  ): ClosureResult = {
     val visited = new Array[Boolean](program.length)
     val charThreads = mutable.ArrayBuffer.empty[(Int, Array[Int])]
     var accepted: Option[Array[Int]] = None
@@ -296,6 +296,7 @@ object CaptureMatcher:
 
     starts.foreach(go)
     ClosureResult(charThreads.toVector, accepted)
+  }
 
   private def stepChar(program: Array[Inst], charThreads: Vector[(Int, Array[Int])], c: Int)
     : Vector[(Int, Array[Int])] =

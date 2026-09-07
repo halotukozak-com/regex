@@ -24,7 +24,7 @@ object CharSet:
   /** Lifts an already-normalized [[ArraySeq]] of ranges into a [[CharSet]]. */
   def of(ranges: ArraySeq[Range]): CharSet = ranges
 
-  extension (cs: CharSet)
+  extension (cs: CharSet) {
     def contains(c: Int): Boolean =
       @tailrec
       def loop(lo: Int, hi: Int): Boolean =
@@ -118,6 +118,7 @@ object CharSet:
       of(builder.result())
 
     def iterator: Iterator[Range] = cs.iterator
+  }
 
   /** Upper bound used for complement. Covers all valid Unicode code points. */
   val maxCodePoint: Int = 0x10ffff

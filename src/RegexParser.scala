@@ -308,7 +308,7 @@ object RegexParser:
         fail(s"quantifier bound exceeds maximum supported value of ${Regex.maxRepeatBound} (got {$lo,$hi})")
       a.repeat(lo, hi)
 
-    private def readNumber(): Int =
+    private def readNumber(): Int = {
       @tailrec def loop(p: Int): Int = if p < src.length && src.charAt(p).isDigit then loop(p + 1) else p
 
       val end = loop(pos)
@@ -318,6 +318,7 @@ object RegexParser:
         pos = end
         try text.toInt
         catch case _: NumberFormatException => fail(s"quantifier value `$text` does not fit in an Int")
+    }
 
     /** atom = group | charClass | `.` | escape | char */
     private def parseAtom(): Regex =

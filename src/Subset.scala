@@ -63,17 +63,16 @@ object Subset:
    * would recurse deriving the equivalent group-free pattern, so this needs the same heap-based
    * trampoline for stack safety, for the same reason.
    */
-  private def eraseGroups(r: Regex): Regex = deepRecursive:
-    r match
-      case Eps | Empty | Chars(_) | StartAnchor => r
-      case Concat(a, b) => eraseGroups(a).concat(eraseGroups(b))
-      case Alt(parts) => Regex.alt(parts.toList.map(eraseGroups))
-      case Inter(parts) => Regex.inter(parts.map(eraseGroups))
-      case Star(inner) => eraseGroups(inner).star
-      case Repeat(inner, lo, hi) => eraseGroups(inner).repeat(lo, hi)
-      case Compl(inner) => !eraseGroups(inner)
-      case Look(inner, positive) => Regex.lookahead(eraseGroups(inner), positive)
-      case Group(_, _, inner) => eraseGroups(inner)
+  private def eraseGroups(r: Regex): Regex = deepRecursive(r match
+    case Eps | Empty | Chars(_) | StartAnchor => r
+    case Concat(a, b) => eraseGroups(a).concat(eraseGroups(b))
+    case Alt(parts) => Regex.alt(parts.toList.map(eraseGroups))
+    case Inter(parts) => Regex.inter(parts.map(eraseGroups))
+    case Star(inner) => eraseGroups(inner).star
+    case Repeat(inner, lo, hi) => eraseGroups(inner).repeat(lo, hi)
+    case Compl(inner) => !eraseGroups(inner)
+    case Look(inner, positive) => Regex.lookahead(eraseGroups(inner), positive)
+    case Group(_, _, inner) => eraseGroups(inner))
 
   /** Parses a pattern into a [[Subset]]. */
   def parse(pattern: String): Either[RegexParseError, Subset] = RegexParser.parse(pattern).map(of)
@@ -81,7 +80,8 @@ object Subset:
   /** The empty-language subset; reference-equal to [[Regex.Empty]] under the opaque type. */
   val empty: Subset = of(Regex.Empty)
 
-  extension (a: Subset)
+  extension (a: Subset) {
+
     /** Underlying [[Regex]]. */
     def underlying: Regex = a
 
@@ -104,7 +104,7 @@ object Subset:
     def properSubset(b: Subset): Boolean = a.subset(b) && !b.subset(a)
 
     /** `true` iff `L(a) = ∅`. */
-    def isEmpty: Boolean =
+    def isEmpty: Boolean = {
       @tailrec def loop(queue: Queue[Regex], visited: Set[Regex]): Boolean =
         queue.dequeueOption match
           case None => true
@@ -116,6 +116,7 @@ object Subset:
               loop(rest.enqueueAll(next), visited ++ next)
 
       loop(Queue(a), Set(a))
+    }
 
     /**
      * Like [[isEmpty]], but fails fast with `Left(StateSpaceLimitExceeded(maxStates))` the
@@ -151,69 +152,70 @@ object Subset:
      */
     def derive(c: Int): Subset = stripStartAnchor(a.rawDerive(c))
 
-    private def rawDerive(c: Int): Subset = deepRecursive:
-      a match
-        case Eps | Empty => Empty
-        case Chars(set) => if set.contains(c) then Eps else Empty
-        case StartAnchor => Empty
+    private def rawDerive(c: Int): Subset = deepRecursive(a match {
+      case Eps | Empty => Empty
+      case Chars(set) => if set.contains(c) then Eps else Empty
+      case StartAnchor => Empty
 
-        /**
-         * A leading lookahead can't be derived independently of what follows it - `Look(r,
-         * _).derive` alone is always `Empty` (see below), which would silently drop the case
-         * where `r` isn't satisfiable yet but becomes so after consuming `c`. So `r`'s own
-         * derivative has to be threaded alongside `b`'s: `r.derive(c).concat(Regex.all)` is
-         * exactly "does the remaining string (after `c`) have a prefix satisfying what's left
-         * of `r`", which is intersected into `b`'s residual - `withAnySuffix` written out
-         * inline since `Subset.withAnySuffix` isn't in scope for a bare `Regex`.
-         */
-        case Concat(Look(r, positive), b) =>
-          val bc = b.derive(c)
-          if positive then if r.nullable then bc else bc & r.derive(c).concat(Regex.all)
-          else if r.nullable then Empty
-          else bc & !r.derive(c).concat(Regex.all)
+      /**
+       * A leading lookahead can't be derived independently of what follows it - `Look(r,
+       * _).derive` alone is always `Empty` (see below), which would silently drop the case
+       * where `r` isn't satisfiable yet but becomes so after consuming `c`. So `r`'s own
+       * derivative has to be threaded alongside `b`'s: `r.derive(c).concat(Regex.all)` is
+       * exactly "does the remaining string (after `c`) have a prefix satisfying what's left
+       * of `r`", which is intersected into `b`'s residual - `withAnySuffix` written out
+       * inline since `Subset.withAnySuffix` isn't in scope for a bare `Regex`.
+       */
+      case Concat(Look(r, positive), b) =>
+        val bc = b.derive(c)
+        if positive then if r.nullable then bc else bc & r.derive(c).concat(Regex.all)
+        else if r.nullable then Empty
+        else bc & !r.derive(c).concat(Regex.all)
 
-        /**
-         * `(A|B)·b` is ordinarily fine to derive via the generic `Concat` rule below - it's
-         * equivalent to `A·b | B·b` for ordinary regex, since `D_c` distributes over `|` either
-         * way. But when a branch is itself a leading lookahead, that equivalence is the only
-         * route to a correct answer: the generic rule only ever consults `Alt(parts).nullable`
-         * and `Alt(parts).derive(c)`, both computed branch-independently - `Look(r,_).derive(c)`
-         * is unconditionally `Empty` (see below), which would silently discard exactly the case
-         * above exists to handle (the assertion becoming satisfiable only after consuming `c`).
-         * Redistributing first, so each branch reaches the `Concat(Look(...), _)` case above
-         * (or the ordinary rule, for a non-lookahead branch) on its own, avoids that loss. Only
-         * taken when a branch actually needs it, to leave ordinary alternations (the overwhelming
-         * majority) on the cheaper generic path below, sharing `b` instead of duplicating it.
-         */
-        case Concat(Alt(parts), b) if parts.exists(hasLeadingLook) =>
-          Regex.alt(parts.toVector.map(_.concat(b).derive(c)))
-        case Concat(a, b) =>
-          val acb = a.derive(c).concat(b)
-          if a.nullable then acb | b.derive(c)
-          else acb
-        case Alt(parts) => Regex.alt(parts.toVector.map(_.derive(c)))
-        case Inter(parts) => Regex.inter(parts.map(_.derive(c)))
-        case s @ Star(inner) => inner.derive(c).concat(s)
+      /**
+       * `(A|B)·b` is ordinarily fine to derive via the generic `Concat` rule below - it's
+       * equivalent to `A·b | B·b` for ordinary regex, since `D_c` distributes over `|` either
+       * way. But when a branch is itself a leading lookahead, that equivalence is the only
+       * route to a correct answer: the generic rule only ever consults `Alt(parts).nullable`
+       * and `Alt(parts).derive(c)`, both computed branch-independently - `Look(r,_).derive(c)`
+       * is unconditionally `Empty` (see below), which would silently discard exactly the case
+       * above exists to handle (the assertion becoming satisfiable only after consuming `c`).
+       * Redistributing first, so each branch reaches the `Concat(Look(...), _)` case above
+       * (or the ordinary rule, for a non-lookahead branch) on its own, avoids that loss. Only
+       * taken when a branch actually needs it, to leave ordinary alternations (the overwhelming
+       * majority) on the cheaper generic path below, sharing `b` instead of duplicating it.
+       */
+      case Concat(Alt(parts), b) if parts.exists(hasLeadingLook) =>
+        Regex.alt(parts.toVector.map(_.concat(b).derive(c)))
+      case Concat(a, b) =>
+        val acb = a.derive(c).concat(b)
+        if a.nullable then acb | b.derive(c)
+        else acb
+      case Alt(parts) => Regex.alt(parts.toVector.map(_.derive(c)))
+      case Inter(parts) => Regex.inter(parts.map(_.derive(c)))
+      case s @ Star(inner) => inner.derive(c).concat(s)
 
-        /**
-         * Standard counting-automaton derivative rule, taken directly through the symbolic
-         * `Repeat` node instead of first unfolding it: `r{lo,hi} ≡ r · r{max(lo-1,0), hi-1}`
-         * (`r{0,hi} ≡ Eps | r{1,hi}` collapses to the same shape, since `D_c(Eps) = Empty` kills
-         * the "stop now" branch as soon as a character's actually been consumed). `hi` strictly
-         * decreases every step and bottoms out at `r.repeat(_, 0) == Eps` (see `Regex.repeat`),
-         * so this terminates the same way `Star`'s self-referential rule above does.
-         */
-        case Repeat(inner, lo, hi) =>
-          val newHi = if hi == Int.MaxValue then Int.MaxValue else hi - 1
-          inner.derive(c).concat(inner.repeat(math.max(lo - 1, 0), newHi))
+      /**
+       * Standard counting-automaton derivative rule, taken directly through the symbolic
+       * `Repeat` node instead of first unfolding it: `r{lo,hi} ≡ r · r{max(lo-1,0), hi-1}`
+       * (`r{0,hi} ≡ Eps | r{1,hi}` collapses to the same shape, since `D_c(Eps) = Empty` kills
+       * the "stop now" branch as soon as a character's actually been consumed). `hi` strictly
+       * decreases every step and bottoms out at `r.repeat(_, 0) == Eps` (see `Regex.repeat`),
+       * so this terminates the same way `Star`'s self-referential rule above does.
+       */
+      case Repeat(inner, lo, hi) =>
+        val newHi = if hi == Int.MaxValue then Int.MaxValue else hi - 1
+        inner.derive(c).concat(inner.repeat(math.max(lo - 1, 0), newHi))
 
-        case Compl(inner) => !inner.derive(c)
+      case Compl(inner) => !inner.derive(c)
 
-        /** Zero-width: `L(Look(r, _)) ⊆ {ε}`, so no nonempty string can start it. */
-        case Look(_, _) => Empty
+      /** Zero-width: `L(Look(r, _)) ⊆ {ε}`, so no nonempty string can start it. */
+      case Look(_, _) => Empty
 
-        /** Never reached: [[Subset.of]] erases every `Group` before anything reaches here. */
-        case g: Group => throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): $g")
+      /** Never reached: [[Subset.of]] erases every `Group` before anything reaches here. */
+      case g: Group => throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): $g")
+    })
+  }
 
   /**
    * `reps` is `Array[Int]`, not `List[Int]`: `List[Int]` boxes every element as a
