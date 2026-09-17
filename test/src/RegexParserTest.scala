@@ -513,3 +513,38 @@ class RegexParserTest extends munit.FunSuite:
     )
     assertEquals(parse("[a-zA-Z_][a-zA-Z0-9_]*"), idStart.concat(idRest.star))
   }
+
+  test("unclosed group names the opener's position and suggests escaping it") {
+    val err = RegexParser.parse("(abc").left.getOrElse(fail("expected a parse error"))
+    assertEquals(
+      err.message,
+      "`(` opened at position 0 is never closed with `)` -- add the matching `)`, " +
+        "or escape the `(` as `\\(` if you meant to match it literally",
+    )
+  }
+
+  test("unclosed character class names the opener's position and suggests escaping it") {
+    val err = RegexParser.parse("[a-z").left.getOrElse(fail("expected a parse error"))
+    assertEquals(
+      err.message,
+      "`[` opened at position 0 is never closed with `]` -- add the matching `]`, " +
+        "or escape the `[` as `\\[` if you meant to match it literally",
+    )
+  }
+
+  test("stray closing paren with no matching opener suggests escaping it") {
+    val err = RegexParser.parse("abc)").left.getOrElse(fail("expected a parse error"))
+    assertEquals(
+      err.message,
+      "`)` at position 3 has no matching `(` -- escape it as `\\)` if you meant to match it literally",
+    )
+  }
+
+  test("bare quantifier/closing metacharacter in atom position suggests escaping it") {
+    val err = RegexParser.parse("*abc").left.getOrElse(fail("expected a parse error"))
+    assertEquals(
+      err.message,
+      "`*` at position 0 is a regex metacharacter and can't appear here -- " +
+        "escape it as `\\*` if you meant to match it literally",
+    )
+  }
