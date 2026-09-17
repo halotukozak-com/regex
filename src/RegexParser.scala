@@ -152,10 +152,7 @@ object RegexParser:
       val p = new Parser(pattern)
       val r = p.parseAlt()
       if p.pos != pattern.length then
-        // parseAlt only ever stops early on a `)` with no `(` to match it - parseConcat treats
-        // `)` as a terminator rather than an error (a *nested* group needs that to close
-        // itself), and parseAlt fully consumes every `|` itself, so this is the one leftover
-        // shape reachable here.
+        // The only leftover shape reachable here is a stray `)` with no matching `(`.
         val message =
           s"`)` at position ${p.pos} has no matching `(` -- escape it as `\\)` if you meant to match it literally"
         Left(RegexParseError.InvalidSyntax(pattern, p.pos, message))
@@ -212,14 +209,7 @@ object RegexParser:
       if eof || cur != c then fail(s"expected `$c` at position $pos")
       pos += 1
 
-    /**
-     * Like [[expect]], but for a closing delimiter whose matching opener we saw earlier at
-     * `openPos`. Reported this way instead of the generic "expected `X`" because the far more
-     * common cause -- for a novice writing their first pattern -- is not a missing closing
-     * delimiter at all, but the opener itself being meant as a literal character, e.g. writing
-     * `"("` to match a literal `(` instead of `"\\("`. Naming both delimiters and both possible
-     * fixes lets the reader diagnose either case without guessing.
-     */
+    /** Like [[expect]], but names the still-open opener too, since forgetting to escape it is the more likely cause. */
     private def expectClose(close: Char, open: Char, openPos: Int): Unit =
       if eof || cur != close then
         fail(
