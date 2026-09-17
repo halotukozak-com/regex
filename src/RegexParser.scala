@@ -536,7 +536,8 @@ object RegexParser:
                 loop(ranges :+ Range(lo, hi), extra)
         else (ranges, extra)
       val (ranges, extra) = loop(Vector.empty, CharSet.empty)
-      if ranges.isEmpty && extra.isEmpty then fail("empty character class")
+      // At eof, let expectClose report the unclosed `[`/`[^` instead of this.
+      if ranges.isEmpty && extra.isEmpty && !eof then fail("empty character class")
       // Skips the union (and the second normalizing pass it implies) in the common case where
       // this operand has no shorthand escape or nested subclass at all.
       if extra.isEmpty then CharSet.normalize(ranges) else CharSet.normalize(ranges).union(extra)

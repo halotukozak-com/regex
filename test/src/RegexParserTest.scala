@@ -548,3 +548,14 @@ class RegexParserTest extends munit.FunSuite:
         "escape it as `\\*` if you meant to match it literally",
     )
   }
+
+  test("character class that runs out of input reports the unclosed opener, not empty-class") {
+    for pattern <- List("[", "[^") do
+      val err = RegexParser.parse(pattern).left.getOrElse(fail(s"expected a parse error for $pattern"))
+      assert(err.message.contains("is never closed with `]`"), err.message)
+  }
+
+  test("[] and [^] still report empty character class") {
+    assertInvalidSyntax(RegexParser.parse("[]"))
+    assertInvalidSyntax(RegexParser.parse("[^]"))
+  }
