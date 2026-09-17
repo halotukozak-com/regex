@@ -152,7 +152,10 @@ object RegexParser:
       val p = new Parser(pattern)
       val r = p.parseAlt()
       if p.pos != pattern.length then
-        Left(RegexParseError.InvalidSyntax(pattern, p.pos, s"unexpected trailing input at position ${p.pos}"))
+        // The only leftover shape reachable here is a stray `)` with no matching `(`.
+        val message =
+          s"`)` at position ${p.pos} has no matching `(` -- escape it as `\\)` if you meant to match it literally"
+        Left(RegexParseError.InvalidSyntax(pattern, p.pos, message))
       else Right(r)
     catch
       case e: InvalidSyntaxSignal => Left(RegexParseError.InvalidSyntax(pattern, e.pos, e.msg))
@@ -204,6 +207,15 @@ object RegexParser:
 
     private def expect(c: Char): Unit =
       if eof || cur != c then fail(s"expected `$c` at position $pos")
+      pos += 1
+
+    /** Like [[expect]], but names the still-open opener too, since forgetting to escape it is the more likely cause. */
+    private def expectClose(close: Char, open: Char, openPos: Int): Unit =
+      if eof || cur != close then
+        fail(
+          s"`$open` opened at position $openPos is never closed with `$close` " +
+            s"-- add the matching `$close`, or escape the `$open` as `\\$open` if you meant to match it literally",
+        )
       pos += 1
 
     /**
@@ -337,12 +349,16 @@ object RegexParser:
           pos += 1
           endOfInput
         case ')' | '|' | '*' | '+' | '?' | '{' | '}' | ']' =>
-          fail(s"unexpected `$cur` at position $pos")
+          fail(
+            s"`$cur` at position $pos is a regex metacharacter and can't appear here " +
+              s"-- escape it as `\\$cur` if you meant to match it literally",
+          )
         case c =>
           pos += 1
           Regex(literalCharSet(c.toInt))
 
     private def parseGroup(): Regex =
+      val openPos = pos
       expect('(')
       val kind =
         if !eof && cur == '?' then
@@ -356,33 +372,33 @@ object RegexParser:
         case GroupKind.FlagDirective(setI, clearI) =>
           applyFlags(setI, clearI)
           val inner = parseAlt()
-          expect(')')
+          expectClose(')', '(', openPos)
           inner
         case GroupKind.Plain =>
           scoped:
             val inner = parseAlt()
-            expect(')')
+            expectClose(')', '(', openPos)
             inner
         case GroupKind.Capturing(index) =>
           scoped:
             val inner = parseAlt()
-            expect(')')
+            expectClose(')', '(', openPos)
             Regex.group(index, None, inner)
         case GroupKind.NamedCapturing(index, name) =>
           scoped:
             val inner = parseAlt()
-            expect(')')
+            expectClose(')', '(', openPos)
             Regex.group(index, Some(name), inner)
         case GroupKind.Look(positive) =>
           scoped:
             val inner = parseAlt()
-            expect(')')
+            expectClose(')', '(', openPos)
             Regex.lookahead(inner, positive)
         case GroupKind.ScopedFlags(setI, clearI) =>
           scoped:
             applyFlags(setI, clearI)
             val inner = parseAlt()
-            expect(')')
+            expectClose(')', '(', openPos)
             inner
 
     /** Runs `body`, restoring `caseInsensitive` to its pre-`body` value afterward. */
@@ -472,11 +488,12 @@ object RegexParser:
      * (`[a-z&&[^bc]]`). Each side of `&&` is independently negatable.
      */
     private def parseClassBody(): CharSet =
+      val openPos = pos
       expect('[')
       val negated = !eof && cur == '^'
       if negated then pos += 1
       val set = parseClassIntersection()
-      expect(']')
+      expectClose(']', '[', openPos)
       val folded = if caseInsensitive then foldCharSet(set) else set
       if negated then folded.complement else folded
 
@@ -519,7 +536,8 @@ object RegexParser:
                 loop(ranges :+ Range(lo, hi), extra)
         else (ranges, extra)
       val (ranges, extra) = loop(Vector.empty, CharSet.empty)
-      if ranges.isEmpty && extra.isEmpty then fail("empty character class")
+      // At eof, let expectClose report the unclosed `[`/`[^` instead of this.
+      if ranges.isEmpty && extra.isEmpty && !eof then fail("empty character class")
       // Skips the union (and the second normalizing pass it implies) in the common case where
       // this operand has no shorthand escape or nested subclass at all.
       if extra.isEmpty then CharSet.normalize(ranges) else CharSet.normalize(ranges).union(extra)
