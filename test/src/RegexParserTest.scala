@@ -559,3 +559,31 @@ class RegexParserTest extends munit.FunSuite:
     assertInvalidSyntax(RegexParser.parse("[]"))
     assertInvalidSyntax(RegexParser.parse("[^]"))
   }
+
+  test("every stray metacharacter reachable in atom position suggests escaping it") {
+    // `)` and `|` can't reach this branch: parseConcat treats both as terminators before
+    // parseAtom ever sees them, so they're covered by the unclosed-group and trailing-input
+    // tests instead.
+    for c <- List(']', '*', '+', '?', '{', '}') do
+      val err = RegexParser.parse(c.toString).left.getOrElse(fail(s"expected a parse error for $c"))
+      assertEquals(
+        err.message,
+        s"`$c` at position 0 is a regex metacharacter and can't appear here -- " +
+          s"escape it as `\\$c` if you meant to match it literally",
+      )
+  }
+
+  test("unclosed nested group reports the innermost opener") {
+    val err = RegexParser.parse("(a(b").left.getOrElse(fail("expected a parse error"))
+    assert(err.message.startsWith("`(` opened at position 2 is never closed"), err.message)
+  }
+
+  test("unclosed character class nested inside a group reports its own opener") {
+    val err = RegexParser.parse("(a[b").left.getOrElse(fail("expected a parse error"))
+    assert(err.message.startsWith("`[` opened at position 2 is never closed"), err.message)
+  }
+
+  test("a paren inside a character class has no special meaning, so the class's own opener is reported") {
+    val err = RegexParser.parse("[a(b").left.getOrElse(fail("expected a parse error"))
+    assert(err.message.startsWith("`[` opened at position 0 is never closed"), err.message)
+  }
