@@ -556,8 +556,9 @@ class RegexParserTest extends munit.FunSuite:
   }
 
   test("[] and [^] still report empty character class") {
-    assertInvalidSyntax(RegexParser.parse("[]"))
-    assertInvalidSyntax(RegexParser.parse("[^]"))
+    for pattern <- List("[]", "[^]") do
+      val err = RegexParser.parse(pattern).left.getOrElse(fail(s"expected a parse error for $pattern"))
+      assertEquals(err.message, "empty character class")
   }
 
   test("every stray metacharacter reachable in atom position suggests escaping it") {
