@@ -213,7 +213,8 @@ object Subset:
       case Look(_, _) => Empty
 
       /** Never reached: [[Subset.of]] erases every `Group` before anything reaches here. */
-      case g: Group => throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): $g")
+      case g: Group =>
+        throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): ${g.toString}")
     })
   }
 
@@ -239,7 +240,7 @@ object Subset:
     case Look(_, _) => true
     case Concat(a, _) => hasLeadingLook(a)
     case Group(_, _, _) =>
-      throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): $r")
+      throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): ${r.toString}")
     case _ => false
 
   /**
@@ -268,7 +269,8 @@ object Subset:
           case Repeat(inner, lo, hi) => stripStartAnchor(inner).repeat(lo, hi)
           case Compl(inner) => !stripStartAnchor(inner)
           case Look(inner, positive) => Regex.lookahead(stripStartAnchor(inner), positive)
-          case g: Group => throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): $g")
+          case g: Group =>
+            throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): ${g.toString}")
           case _ => r
 
   /**
