@@ -21,29 +21,37 @@ object `package` extends Module:
   trait Shared extends ScalaModule with PlatformScalaModule with SonatypeCentralPublishModule:
     def scalaVersion = "3.9.0"
 
-    override def scalacOptions = Seq(
-      "-deprecation",
-      "-feature",
-      "-new-syntax",
-      "-unchecked",
-      "-language:noAutoTupling",
-      "-Vprofile",
-      "-Xprint-inline",
-      "-Xcheck-macros",
-      "-Ycheck:macros",
-      "-Ydebug-flags",
-      "-Ydebug-missing-refs",
-      "-Yexplain-lowlevel",
-      "-Yexplicit-nulls",
-      "-Yshow-suppressed-errors",
-      "-Yshow-var-bounds",
-      "-Wsafe-init",
-      "-Werror",
-      "-Wunused:all",
-      // -Ycheck:all can't be enabled once Scoverage instruments the trees (same
-      // limitation alpaca hit); -Ycheck:macros above stays.
-      "-Wconf:msg=Skipping coverage instrumentation.*:s",
-    )
+    // Task.env (not sys.env): the Mill daemon captures its environment once, so a cached task reading sys.env
+    // would never see CI change; Task.Input re-reads it on every run
+    def isCI: T[Boolean] = Task.Input(Task.env.contains("CI"))
+
+    override def scalacOptions = Task {
+      val common = Seq(
+        "-deprecation",
+        "-feature",
+        "-new-syntax",
+        "-unchecked",
+        "-language:noAutoTupling",
+        // "-Vprofile",
+        // "-Xprint-inline",
+        "-Xcheck-macros",
+        "-Ycheck:macros",
+        // "-Ydebug-flags",
+        // "-Ydebug-missing-refs",
+        // "-Yexplain-lowlevel",
+        "-Yexplicit-nulls",
+        // "-Yshow-suppressed-errors",
+        // "-Yshow-var-bounds",
+        "-Wsafe-init",
+        "-Werror",
+        // -Ycheck:all can't be enabled once Scoverage instruments the trees (same
+        // limitation alpaca hit); -Ycheck:macros above stays.
+        "-Wconf:msg=Skipping coverage instrumentation.*:s",
+      )
+      // the compiler debugging flags above are left commented out, to switch back on while chasing a compiler problem
+      val ciOnly = Seq("-Wall")
+      if isCI() then common ++ ciOnly else common
+    }
 
     override def scalaDocOptions = Task {
       Seq(
