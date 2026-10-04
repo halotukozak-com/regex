@@ -19,7 +19,7 @@ import mill.util.VcsVersion
 object `package` extends Module:
 
   trait Shared extends ScalaModule with PlatformScalaModule with SonatypeCentralPublishModule:
-    def scalaVersion = "3.9.0"
+    def scalaVersion = "3.10.0"
 
     // Task.env (not sys.env): the Mill daemon captures its environment once, so a cached task reading sys.env
     // would never see CI change; Task.Input re-reads it on every run

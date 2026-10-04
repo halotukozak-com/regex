@@ -30,21 +30,21 @@ Published to Maven Central under `com.halotukozak`. Requires Scala 3.
 ### scala-cli
 
 ```scala
-//> using scala 3.9.0
+//> using scala 3.10.0
 //> using dep com.halotukozak::regex::0.2.1
 ```
 
 ### sbt
 
 ```scala
-scalaVersion := "3.9.0"
+scalaVersion := "3.10.0"
 libraryDependencies += "com.halotukozak" %% "regex" % "0.2.1"
 ```
 
 ### mill
 
 ```scala
-def scalaVersion = "3.9.0"
+def scalaVersion = "3.10.0"
 def mvnDeps = Seq(mvn"com.halotukozak::regex::0.2.1")
 ```
 
