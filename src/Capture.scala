@@ -200,7 +200,9 @@ object CaptureMatcher:
         // Never produced by RegexParser.parse (`&&`/`[^...]` stay at the CharSet level - see
         // RegexParser.scala; Inter/Compl are only ever built programmatically, e.g. by Subset's
         // own `&`/`!`), so CaptureMatcher.parse's input can't contain either.
-        throw MatchError(s"unreachable: CaptureMatcher doesn't support $node (never produced by RegexParser.parse)")
+        throw MatchError(
+          s"unreachable: CaptureMatcher doesn't support ${node.toString} (never produced by RegexParser.parse)",
+        )
 
     /**
      * A plain `@tailrec` loop, not `deepRecursive`: recursion depth here tracks branch *count*,

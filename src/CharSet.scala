@@ -143,7 +143,7 @@ object CharSet:
   /** Builds a normalized [[CharSet]] from arbitrary (possibly overlapping) ranges. */
   def normalize(rs: Iterable[Range]): CharSet =
     val sorted = rs.toArray
-    sorted.sortInPlaceBy(_.lo)
+    sorted.sortInPlaceBy(_.lo): Unit
     val builder = ArraySeq.newBuilder[Range]
     builder.sizeHint(sorted.length)
     var cur: Range | Null = null

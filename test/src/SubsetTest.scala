@@ -6,7 +6,7 @@ class SubsetTest extends munit.FunSuite:
 
   private def s(pattern: String): Subset = Subset.parse(pattern) match
     case Right(sub) => sub
-    case Left(err) => fail(s"expected successful parse of /$pattern/, got $err")
+    case Left(err) => fail(s"expected successful parse of /$pattern/, got ${err.toString}")
   private def s(r: Regex): Subset = Subset.of(r)
 
   test("identity: r ⊆ r") {

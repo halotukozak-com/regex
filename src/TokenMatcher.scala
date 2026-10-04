@@ -32,7 +32,8 @@ import scala.util.boundary.break
  */
 inline def tokenMatcher(inline patterns: String*): TokenMatcher = ${ tokenMatcherImpl('patterns) }
 
-private def tokenMatcherImpl(patternsExpr: Expr[Seq[String]])(using quotes: Quotes): Expr[TokenMatcher] =
+@publicInBinary private[regex] def tokenMatcherImpl(patternsExpr: Expr[Seq[String]])(using quotes: Quotes)
+  : Expr[TokenMatcher] =
   import quotes.reflect.*
   patternsExpr match
     case Varargs(patternExprs) =>
@@ -42,7 +43,7 @@ private def tokenMatcherImpl(patternsExpr: Expr[Seq[String]])(using quotes: Quot
             report.errorAndAbort("tokenMatcher patterns must be string literals known at compile time", patternExpr)
           case Some(pattern) =>
             RegexParser.parse(pattern) match
-              case Left(error) => report.errorAndAbort(s"Regex parse error: $error", patternExpr)
+              case Left(error) => report.errorAndAbort(s"Regex parse error: ${error.toString}", patternExpr)
               case Right(regex) => regex
       }
       Expr(TokenMatcher.fromRegexes(regexes*))

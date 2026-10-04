@@ -6,15 +6,15 @@ class RegexParserTest extends munit.FunSuite:
 
   private def parse(pattern: String): Regex = RegexParser.parse(pattern) match
     case Right(r) => r
-    case Left(err) => fail(s"expected successful parse of /$pattern/, got $err")
+    case Left(err) => fail(s"expected successful parse of /$pattern/, got ${err.toString}")
 
   private def assertInvalidSyntax(result: Either[RegexParseError, Regex]): Unit = result match
     case Left(_: RegexParseError.InvalidSyntax) => ()
-    case other => fail(s"expected InvalidSyntax, got $other")
+    case other => fail(s"expected InvalidSyntax, got ${other.toString}")
 
   private def assertUnsupported(result: Either[RegexParseError, Regex]): Unit = result match
     case Left(_: RegexParseError.UnsupportedFeature) => ()
-    case other => fail(s"expected UnsupportedFeature, got $other")
+    case other => fail(s"expected UnsupportedFeature, got ${other.toString}")
 
   test("RegexParseError's toString includes the message, position, and pattern") {
     val err: RegexParseError = RegexParser.parse("(?<=foo)").left.getOrElse(fail("expected a parse error"))
@@ -338,7 +338,7 @@ class RegexParserTest extends munit.FunSuite:
     // non-ASCII lowercase/uppercase letters (e.g. 'é'/'É') that \p{Lower}/\p{Upper} exclude.
     def s(pattern: String): Subset = Subset.parse(pattern) match
       case Right(sub) => sub
-      case Left(err) => fail(s"expected successful parse of /$pattern/, got $err")
+      case Left(err) => fail(s"expected successful parse of /$pattern/, got ${err.toString}")
     assert(s("\\p{Lower}").properSubset(s("\\p{Ll}")))
     assert(s("\\p{Upper}").properSubset(s("\\p{Lu}")))
     assert(s("[\\p{Lower}\\p{Upper}]").properSubset(s("\\p{L}")))
@@ -487,7 +487,7 @@ class RegexParserTest extends munit.FunSuite:
   test("accepts quantifier bounds up to the cap") {
     RegexParser.parse(s"a{${Regex.maxRepeatBound}}") match
       case Right(_) => ()
-      case Left(err) => fail(s"expected successful parse, got $err")
+      case Left(err) => fail(s"expected successful parse, got ${err.toString}")
   }
 
   test("rejects quantifier bounds above the cap") {

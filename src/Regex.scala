@@ -2,7 +2,7 @@ package halotukozak.regex
 
 import halotukozak.commons.deepRecursive
 
-import scala.annotation.{threadUnsafe, unused}
+import scala.annotation.{publicInBinary, threadUnsafe, unused}
 import scala.collection.immutable.SortedSet
 import scala.collection.mutable
 import scala.quoted.{Expr, Quotes, ToExpr, Varargs}
@@ -21,20 +21,21 @@ import scala.util.hashing.MurmurHash3
  */
 extension (inline sc: StringContext) inline def regex(@unused args: Any*): Regex = ${ regexInterpolatorImpl('sc) }
 
-private def regexInterpolatorImpl(scExpr: Expr[StringContext])(using quotes: Quotes): Expr[Regex] =
+@publicInBinary private[regex] def regexInterpolatorImpl(scExpr: Expr[StringContext])(using quotes: Quotes)
+  : Expr[Regex] =
   import quotes.reflect.*
   scExpr.value match
     case Some(sc) =>
       val pattern = sc.parts.mkString
       RegexParser.parse(pattern) match
         case Left(error) =>
-          report.errorAndAbort(s"Regex parse error: $error")
+          report.errorAndAbort(s"Regex parse error: ${error.toString}")
         case Right(regex) =>
           Expr(regex)
     case None =>
       '{
         RegexParser.parse(${ scExpr }.parts.mkString) match
-          case Left(error) => throw IllegalArgumentException(s"Regex parse error: $error")
+          case Left(error) => throw IllegalArgumentException(s"Regex parse error: ${error.toString}")
           case Right(regex) => regex
       }
 
@@ -565,7 +566,7 @@ object Regex:
                 val off = partsFlat.length
                 parts.foreach(p => partsFlat += index(p))
                 push(RegexTag.Inter, off, parts.size, 0)
-              case leaf => throw MatchError(s"unreachable: leaf node $leaf pushed as Exit")
+              case leaf => throw MatchError(s"unreachable: leaf node ${leaf.toString} pushed as Exit")
 
       val nodesPart = Iterator
         .range(0, tags.length)
@@ -579,7 +580,7 @@ object Regex:
    * each node from its already-built children, with no recursion at all - the counterpart to
    * [[RegexEncoder]]'s iterative encode, and, like it, a pure function with no macro dependency.
    */
-  private[regex] object RegexDecoder:
+  @publicInBinary private[regex] object RegexDecoder:
     def decode(
       nodesPart: String,
       partsFlatPart: String,

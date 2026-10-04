@@ -23,7 +23,7 @@ class CaptureBenchmark:
 
   private def matcherOf(pattern: String): CaptureMatcher = CaptureMatcher.parse(pattern) match
     case Right(m) => m
-    case Left(err) => throw IllegalStateException(s"benchmark pattern failed to parse: $err")
+    case Left(err) => throw IllegalStateException(s"benchmark pattern failed to parse: ${err.toString}")
 
   private val emailMatcher = matcherOf(emailPattern)
 

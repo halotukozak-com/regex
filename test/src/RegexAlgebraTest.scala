@@ -23,7 +23,7 @@ class RegexAlgebraTest extends munit.FunSuite:
   test("concat is right-associated") {
     rA.concat(rB).concat(rC) match
       case Concat(a, Concat(b, c)) => assertEquals((a, b, c), (rA, rB, rC))
-      case other => fail(s"not right-associated: $other")
+      case other => fail(s"not right-associated: ${other.toString}")
   }
 
   // alt -------------------------------------------------------------------
@@ -43,7 +43,7 @@ class RegexAlgebraTest extends munit.FunSuite:
     val sC = rC.star
     sA | sB | sC match
       case Alt(parts) => assertEquals(parts.toSet, Set(sA, sB, sC))
-      case other => fail(s"not flattened Alt: $other")
+      case other => fail(s"not flattened Alt: ${other.toString}")
   }
 
   test("alt merges Chars by union") {
@@ -98,7 +98,7 @@ class RegexAlgebraTest extends munit.FunSuite:
   test("lookahead wraps a non-degenerate body") {
     Regex.lookahead(rA, positive = true) match
       case Look(r, positive) => assertEquals((r, positive), (rA, true))
-      case other => fail(s"not Look: $other")
+      case other => fail(s"not Look: ${other.toString}")
   }
 
   test("positive lookahead of Empty is Empty; of Eps is Eps") {
@@ -124,7 +124,7 @@ class RegexAlgebraTest extends munit.FunSuite:
   test("literal of two chars is right-associated Concat") {
     Regex.literal("ab") match
       case Concat(a, b) => assertEquals((a, b), (Regex.lit('a'), Regex.lit('b')))
-      case other => fail(s"not Concat: $other")
+      case other => fail(s"not Concat: ${other.toString}")
   }
 
   // repeat ----------------------------------------------------------------
@@ -140,7 +140,7 @@ class RegexAlgebraTest extends munit.FunSuite:
   test("repeat {lo,hi} is a single Repeat node, not lo/hi copies of the regex") {
     rA.repeat(2, Int.MaxValue) match
       case Repeat(r, 2, Int.MaxValue) => assertEquals(r, rA)
-      case other => fail(s"not Repeat(rA, 2, MaxValue): $other")
+      case other => fail(s"not Repeat(rA, 2, MaxValue): ${other.toString}")
   }
 
   test("repeat {n, MaxValue} matches the same language as the unrolled concat+star form") {
@@ -150,11 +150,11 @@ class RegexAlgebraTest extends munit.FunSuite:
   }
 
   test("repeat rejects invalid bounds") {
-    intercept[IllegalArgumentException](rA.repeat(-1, 0))
+    intercept[IllegalArgumentException](rA.repeat(-1, 0)): Unit
     intercept[IllegalArgumentException](rA.repeat(3, 2))
   }
 
   test("repeat rejects bounds above maxRepeatBound") {
-    intercept[IllegalArgumentException](rA.repeat(0, Regex.maxRepeatBound + 1))
+    intercept[IllegalArgumentException](rA.repeat(0, Regex.maxRepeatBound + 1)): Unit
     intercept[IllegalArgumentException](rA.repeat(Regex.maxRepeatBound + 1, Regex.maxRepeatBound + 1))
   }
