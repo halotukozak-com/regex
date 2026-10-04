@@ -63,7 +63,7 @@
     typeNames.get(Character.getType(cp).toByte).foreach { name =>
       val buf = ranges(name)
       if buf.nonEmpty && buf.last._2 == cp - 1 then buf(buf.length - 1) = (buf.last._1, cp)
-      else buf += ((cp, cp))
+      else buf += ((cp, cp)): Unit
     }
     cp += 1
 

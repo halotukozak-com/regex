@@ -4,7 +4,7 @@ class CaptureTest extends munit.FunSuite:
 
   private def m(pattern: String): CaptureMatcher = CaptureMatcher.parse(pattern) match
     case Right(matcher) => matcher
-    case Left(err) => fail(s"expected successful parse of /$pattern/, got $err")
+    case Left(err) => fail(s"expected successful parse of /$pattern/, got ${err.toString}")
 
   private def matchOf(pattern: String, input: String): MatchResult =
     m(pattern).matchWhole(input) match

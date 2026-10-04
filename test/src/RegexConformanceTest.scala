@@ -17,15 +17,15 @@ class RegexConformanceTest extends munit.FunSuite:
 
   private def parse(pattern: String): Regex = RegexParser.parse(pattern) match
     case Right(r) => r
-    case Left(err) => fail(s"expected successful parse of /$pattern/, got $err")
+    case Left(err) => fail(s"expected successful parse of /$pattern/, got ${err.toString}")
 
   private def subsetOf(pattern: String): Subset = Subset.parse(pattern) match
     case Right(s) => s
-    case Left(err) => fail(s"expected successful parse of /$pattern/, got $err")
+    case Left(err) => fail(s"expected successful parse of /$pattern/, got ${err.toString}")
 
   private def assertInvalidSyntax(result: Either[RegexParseError, Regex]): Unit = result match
     case Left(_: RegexParseError.InvalidSyntax) => ()
-    case other => fail(s"expected InvalidSyntax, got $other")
+    case other => fail(s"expected InvalidSyntax, got ${other.toString}")
 
   /**
    * Decodes a UTF-16 string into full Unicode code points, combining surrogate pairs.
