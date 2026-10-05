@@ -46,7 +46,7 @@ object `package` extends Module:
         "-Werror",
         // -Ycheck:all can't be enabled once Scoverage instruments the trees (same
         // limitation alpaca hit); -Ycheck:macros above stays.
-        "-Wconf:msg=Skipping coverage instrumentation.*:s",
+        "-Wconf:msg=Skipping coverage instrumentation.*:i",
       )
       // the compiler debugging flags above are left commented out, to switch back on while chasing a compiler problem
       val ciOnly = Seq("-Wall")
