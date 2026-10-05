@@ -49,7 +49,12 @@ object `package` extends Module:
         "-Wconf:msg=Skipping coverage instrumentation.*:i",
       )
       // the compiler debugging flags above are left commented out, to switch back on while chasing a compiler problem
-      val ciOnly = Seq("-Wall")
+      val ciOnly = Seq(
+        "-Wall",
+        // -Wall's -Wshadow:type-parameter-shadow (E226) can't be switched off afterwards; it mostly flags
+        // refinement members shadowing an imported name, so its reports are dropped
+        "-Wconf:id=E226:s",
+      )
       if isCI() then common ++ ciOnly else common
     }
 
