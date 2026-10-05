@@ -2,7 +2,7 @@ package halotukozak.regex
 
 import scala.compiletime.testing.{typeCheckErrors, typeChecks}
 
-class TokenMatcherMacroTest extends munit.FunSuite:
+class TokenMatcherMacroTest extends munit.FunSuite, UnionSafeCompare:
 
   // Cross-check: the macro's compile-time expansion (RegexParser.parse per pattern, then
   // TokenMatcher.compile, then a ToExpr[TokenMatcher] round-trip) must behave identically to
@@ -14,21 +14,21 @@ class TokenMatcherMacroTest extends munit.FunSuite:
       RegexParser.parse("if").toOption.get,
       RegexParser.parse("[a-zA-Z_][a-zA-Z0-9_]*").toOption.get,
     )
-    assertEquals[Any, Any](compileTime.matchAt("ifx", 0), runtime.matchAt("ifx", 0))
-    assertEquals[Any, Any](compileTime.matchAt("ifx", 0), (priority = 1, end = 3))
-    assertEquals[Any, Any](compileTime.matchAt("if", 0), (priority = 0, end = 2))
+    assertEquals(compileTime.matchAt("ifx", 0), runtime.matchAt("ifx", 0))
+    assertEquals(compileTime.matchAt("ifx", 0), (priority = 1, end = 3))
+    assertEquals(compileTime.matchAt("if", 0), (priority = 0, end = 2))
   }
 
   test("tokenMatcher with a single pattern") {
     val m = tokenMatcher("[0-9]+")
-    assertEquals[Any, Any](m.matchAt("123abc", 0), (priority = 0, end = 3))
-    assertEquals[Any, Any](m.matchAt("abc", 0), null)
+    assertEquals(m.matchAt("123abc", 0), (priority = 0, end = 3))
+    assertEquals(m.matchAt("abc", 0), null)
   }
 
   test("tokenMatcher ties broken by lowest priority index, same as fromRegexes") {
     val m = tokenMatcher("break", "[a-zA-Z_][a-zA-Z0-9_]*")
-    assertEquals[Any, Any](m.matchAt("break", 0), (priority = 0, end = 5))
-    assertEquals[Any, Any](m.matchAt("breaker", 0), (priority = 1, end = 7))
+    assertEquals(m.matchAt("break", 0), (priority = 0, end = 5))
+    assertEquals(m.matchAt("breaker", 0), (priority = 1, end = 7))
   }
 
   // Compile-time validation: every pattern is parsed and compiled into a DFA while compiling
