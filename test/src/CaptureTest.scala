@@ -118,3 +118,12 @@ class CaptureTest extends munit.FunSuite:
   test("unapplySeq excludes group 0 (the whole match), same convention as scala.util.matching.Regex") {
     assertEquals(m("(a)(b)").unapplySeq("ab"), Some(Seq(Some("a"), Some("b"))))
   }
+
+  test("patterns containing a surrogate pair match it as one character") {
+    val grin = "😀"
+    for pattern <- Seq(grin, s"[a-z$grin]+", s"\\Q$grin\\E", s"\\$grin", "\\uD83D\\uDE00", s"(?i)$grin") do
+      assert(m(pattern).matchWhole(grin).isDefined, s"/$pattern/ should match $grin")
+    assertEquals(matchOf(s"($grin)x", s"${grin}x").group(1), Some((start = 0, end = 2)))
+    // The class has one emoji member, so it doesn't match the BMP code units in its old ([DE00, ...]) range.
+    assert(m(s"[$grin-\\x{1F64F}]").matchWhole("\uDE00").isEmpty)
+  }

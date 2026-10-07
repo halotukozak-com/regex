@@ -205,6 +205,12 @@ object RegexParser:
       pos += 1
       c
 
+    /** Like [[consume]], but reads a surrogate pair as the one code point it encodes. */
+    private def consumeCodePoint(): Int =
+      val c = Character.codePointAt(src, pos)
+      pos += Character.charCount(c)
+      c
+
     private def expect(c: Char): Unit =
       if eof || cur != c then fail(s"expected `$c` at position $pos")
       pos += 1
@@ -253,7 +259,7 @@ object RegexParser:
 
     /** Like [[Regex.literal]], but folds each character per [[literalCharSet]] along the way. */
     private def literalText(text: String): Regex =
-      text.foldRight(Eps: Regex)((c, acc) => Regex(literalCharSet(c.toInt)).concat(acc))
+      Regex.codePoints(text).foldRight(Eps: Regex)((c, acc) => Regex(literalCharSet(c)).concat(acc))
 
     /** alt = concat ('|' concat)* */
     def parseAlt(): Regex =
@@ -353,9 +359,7 @@ object RegexParser:
             s"`$cur` at position $pos is a regex metacharacter and can't appear here " +
               s"-- escape it as `\\$cur` if you meant to match it literally",
           )
-        case c =>
-          pos += 1
-          Regex(literalCharSet(c.toInt))
+        case _ => Regex(literalCharSet(consumeCodePoint()))
 
     private def parseGroup(): Regex =
       val openPos = pos
@@ -532,7 +536,10 @@ object RegexParser:
                       case Left(_) => fail(s"invalid character-class range: shorthand escape can't end a range")
                       case Right(hi) => hi
                   else lo
-                if hi < lo then fail(s"invalid character-class range `${lo.toChar}-${hi.toChar}`: end must be >= start")
+                if hi < lo then
+                  fail(
+                    s"invalid character-class range `${showCodePoint(lo)}-${showCodePoint(hi)}`: end must be >= start",
+                  )
                 loop(ranges :+ Range(lo, hi), extra)
         else (ranges, extra)
       val (ranges, extra) = loop(Vector.empty, CharSet.empty)
@@ -551,7 +558,7 @@ object RegexParser:
         case '\\' =>
           pos += 1
           readEscapedChar(inClass = true)
-        case _ => Right(consume().toInt)
+        case _ => Right(consumeCodePoint())
 
     private def parseEscape(): Regex =
       expect('\\')
@@ -621,7 +628,9 @@ object RegexParser:
         case _ =>
           if c.isDigit then unsupported(s"backreference `\\$c`")
           else if c.isLetter then fail(s"illegal/unsupported escape sequence `\\$c` at position $pos")
-          else Right(c.toInt)
+          else
+            pos -= 1
+            Right(consumeCodePoint())
 
     /**
      * `\p{Name}` / `\P{Name}` (negated): a Unicode general category (`L`, `Lu`, `Nd`, ...; see
@@ -647,7 +656,7 @@ object RegexParser:
     /** `\cx`: control character `x XOR 0x40`. */
     private def readControlEscape(): Int =
       if eof then fail(s"incomplete `\\c` escape at position $pos")
-      consume().toInt ^ 0x40
+      consumeCodePoint() ^ 0x40
 
     /** `\xhh` (exactly 2 hex digits) or `\x{h...h}` (1+ hex digits, a valid code point). */
     private def readHexEscape(): Int =
@@ -669,8 +678,24 @@ object RegexParser:
         pos += 2
         v
 
-    /** `\uhhhh`: exactly 4 hex digits. */
+    /**
+     * `\uhhhh`: exactly 4 hex digits. A high surrogate directly followed by a `\uhhhh` low
+     * surrogate is one code point, as in `java.util.regex.Pattern` (e.g. high `D83D` then low
+     * `DE00` is U+1F600).
+     */
     private def readUnicodeEscape(): Int =
+      val high = readUnicodeHex()
+      if Character.isHighSurrogate(high.toChar) && src.startsWith("\\u", pos) then
+        val afterHigh = pos
+        pos += 2
+        val low = readUnicodeHex()
+        if Character.isLowSurrogate(low.toChar) then Character.toCodePoint(high.toChar, low.toChar)
+        else
+          pos = afterHigh
+          high
+      else high
+
+    private def readUnicodeHex(): Int =
       if pos + 4 > src.length then fail("incomplete `\\u` escape")
       val text = src.substring(pos, pos + 4)
       val v = text.toHexIntOpt.getOrElse(fail(s"invalid unicode escape sequence `\\u$text`"))
@@ -689,6 +714,8 @@ object RegexParser:
           n * 64 + m * 8 + o
         else n * 8 + m
       else n
+
+private def showCodePoint(c: Int): String = String(Character.toChars(c))
 
 extension (str: String)
   private def toHexIntOpt: Option[Int] =

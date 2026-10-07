@@ -2,7 +2,7 @@ package halotukozak.regex
 
 import halotukozak.commons.deepRecursive
 
-import scala.annotation.{publicInBinary, threadUnsafe, unused}
+import scala.annotation.{publicInBinary, tailrec, threadUnsafe, unused}
 import scala.collection.immutable.SortedSet
 import scala.collection.mutable
 import scala.quoted.{Expr, Quotes, ToExpr, Varargs}
@@ -399,10 +399,19 @@ object Regex:
   /** Convenience: char range. */
   def range(lo: Char, hi: Char): Regex = Regex(CharSet.range(lo, hi))
 
-  /** Convenience: literal string. */
+  /** Convenience: literal string, one character per code point (a surrogate pair is one character). */
   def literal(s: String): Regex =
     if s.isEmpty then Eps
-    else s.foldRight(Eps: Regex)((c, acc) => lit(c).concat(acc))
+    else codePoints(s).foldRight(Eps: Regex)((c, acc) => Regex(CharSet.single(c)).concat(acc))
+
+  /** `s` split into code points, decoding surrogate pairs the same way the matchers decode input. */
+  private[regex] def codePoints(s: String): Vector[Int] =
+    @tailrec def loop(pos: Int, acc: Vector[Int]): Vector[Int] =
+      if pos >= s.length then acc
+      else
+        val c = Character.codePointAt(s, pos)
+        loop(pos + Character.charCount(c), acc :+ c)
+    loop(0, Vector.empty)
 
   // $COVERAGE-OFF$
   /**
