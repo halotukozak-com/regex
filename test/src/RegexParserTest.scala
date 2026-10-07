@@ -8,6 +8,8 @@ class RegexParserTest extends munit.FunSuite:
     case Right(r) => r
     case Left(err) => fail(s"expected successful parse of /$pattern/, got ${err.toString}")
 
+  private val grin = "😀" // U+1F600, a surrogate pair in UTF-16
+
   private def assertInvalidSyntax(result: Either[RegexParseError, Regex]): Unit = result match
     case Left(_: RegexParseError.InvalidSyntax) => ()
     case other => fail(s"expected InvalidSyntax, got ${other.toString}")
@@ -399,6 +401,45 @@ class RegexParserTest extends munit.FunSuite:
 
   test("parses \\uhhhh unicode escape") {
     assertEquals(parse("\\u0041"), Regex.lit('A'))
+  }
+
+  // Surrogate pairs: the matchers decode input by code point, so the pattern must too.
+
+  test("a \\uhhhh surrogate-pair escape is one code point") {
+    assertEquals(parse("\\uD83D\\uDE00"), Regex(CharSet.single(0x1f600)))
+  }
+
+  test("a lone \\uhhhh surrogate stays a single unit") {
+    assertEquals(parse("\\uD83Dx"), Regex(CharSet.single(0xd83d)).concat(Regex.lit('x')))
+    assertEquals(parse("\\uD83D\\u0041"), Regex(CharSet.single(0xd83d)).concat(Regex.lit('A')))
+  }
+
+  test("a literal surrogate pair is one code point") {
+    assertEquals(parse(grin), Regex(CharSet.single(0x1f600)))
+    assertEquals(parse(s"a${grin}b"), Regex.literal(s"a${grin}b"))
+    assertEquals(Regex.literal(grin), Regex(CharSet.single(0x1f600)))
+  }
+
+  test("an escaped surrogate pair is one code point") {
+    assertEquals(parse(s"\\$grin"), Regex(CharSet.single(0x1f600)))
+  }
+
+  test("a surrogate pair inside \\Q...\\E is one code point") {
+    assertEquals(parse(s"\\Q$grin\\E"), Regex(CharSet.single(0x1f600)))
+  }
+
+  test("a surrogate pair in a character class is one member") {
+    assertEquals(parse(s"[a-z$grin]"), Regex(CharSet.range('a', 'z') | CharSet.single(0x1f600)))
+  }
+
+  test("a surrogate pair can bound a character-class range") {
+    assertEquals(parse(s"[$grin-\\x{1F64F}]"), Regex(CharSet.range(0x1f600, 0x1f64f)))
+  }
+
+  test("an inverted range of supplementary code points names them in the error") {
+    RegexParser.parse(s"[\\x{1F64F}-$grin]") match
+      case Left(err) => assert(err.toString.contains(s"🙏-$grin"), err.toString)
+      case other => fail(s"expected a parse error, got ${other.toString}")
   }
 
   test("parses \\0 octal escape") {

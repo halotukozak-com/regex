@@ -332,3 +332,9 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
     assertEquals(withGroups.matchAt("ifx", 0), withoutGroups.matchAt("ifx", 0))
     assertEquals(withGroups.matchAt("if", 0), withoutGroups.matchAt("if", 0))
   }
+
+  test("a pattern containing a surrogate pair matches the whole pair") {
+    val grin = "😀"
+    val m = matcher("[a-z]+", s"[a-z$grin]+")
+    assertEquals(m.matchAt(s"ab${grin}c", 0), (priority = 1, end = 5))
+  }
