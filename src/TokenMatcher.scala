@@ -70,7 +70,19 @@ inline def tokenMatcher(inline patterns: String*): TokenMatcher = ${ tokenMatche
  * `transitions` is `numStates * boundaries.length` entries, row-major by state; `-1` marks the
  * (unrepresented) dead state, i.e. every pattern's derivative going empty.
  *
- * `accept(state)` is the lowest pattern index nullable in that state, or `-1` if none is.
+ * `accept(state)` is the lowest pattern index accepting in that state, or `-1` if none is.
+ * Whether a pattern accepts can depend on the input that follows when it ends in a lookahead
+ * (`a(?=b)`, `a$`): the lookahead sees the rest of the input, not the end of the token. A state
+ * where that decides the winner has `accept(state) <= -2` instead, pointing at offset
+ * `-2 - accept(state)` of `contexts`: a count `n`, then `n` `(priority, context state)` pairs in
+ * priority order, then the priority accepting regardless of what follows (or `-1`). The first
+ * pair whose context holds at the current position wins, else that last entry does.
+ *
+ * Contexts run on a second DFA over the same partitions, `contextTransitions`, built from
+ * [[Subset.emptyContext]]. `contextStatus(state)` marks each of its states as holding for every
+ * remaining input (`Holds`), for none (`Fails`), or not yet decided (and if so, whether it holds
+ * at the end of input), so a check stops as soon as the answer is fixed instead of reading on to
+ * the end of the input.
  *
  * A pattern containing [[Regex.Group]] nodes (capturing/named groups) compiles fine - they're
  * erased the same way [[Subset.of]] erases them for containment checks (`fromRegexes`/
@@ -89,7 +101,18 @@ final class TokenMatcher @publicInBinary private (
   private val transitions: Array[Int],
   private val accept: Array[Int],
   private val fastAscii: Array[Int],
+  private val contexts: Array[Int],
+  private val contextTransitions: Array[Int],
+  private val contextStatus: Array[Int],
 ):
+  /** The shape `tokenMatcher(...)` expansions compiled against earlier versions still call. */
+  @publicInBinary private def this(
+    boundaries: Array[Int],
+    transitions: Array[Int],
+    accept: Array[Int],
+    fastAscii: Array[Int],
+  ) = this(boundaries, transitions, accept, fastAscii, Array.emptyIntArray, Array.emptyIntArray, Array.emptyIntArray)
+
   private def numPartitions: Int = boundaries.length
 
   /**
@@ -129,12 +152,40 @@ final class TokenMatcher @publicInBinary private (
         if next < 0 then endResult(bestPriority, bestEnd)
         else
           val nextPos = pos + Character.charCount(c)
-          accept(next) match
-            case acc if acc >= 0 => loop(next, nextPos, acc, nextPos)
-            case _ => loop(next, nextPos, bestPriority, bestEnd)
+          val acc = accept(next)
+          if acc >= 0 then loop(next, nextPos, acc, nextPos)
+          else if acc == -1 then loop(next, nextPos, bestPriority, bestEnd)
+          else
+            val priority = acceptInContext(acc, input, nextPos)
+            if priority >= 0 then loop(next, nextPos, priority, nextPos)
+            else loop(next, nextPos, bestPriority, bestEnd)
     def endResult(priority: Int, end: Int) = if end >= 0 then (priority = priority, end = end) else null
-    val initialAccept = accept(0)
+    val initialAccept = acceptInContext(accept(0), input, start)
     loop(0, start, initialAccept, if initialAccept >= 0 then start else -1)
+
+  /** Resolves an `accept` entry against the input from `pos` on - see the class doc comment. */
+  private def acceptInContext(acc: Int, input: CharSequence, pos: Int): Int =
+    if acc >= -1 then acc
+    else
+      val offset = -2 - acc
+      val count = contexts(offset)
+      @tailrec def loop(i: Int): Int =
+        if i == count then contexts(offset + 1 + 2 * count)
+        else if contextHolds(contexts(offset + 2 + 2 * i), input, pos) then contexts(offset + 1 + 2 * i)
+        else loop(i + 1)
+      loop(0)
+
+  @tailrec
+  private def contextHolds(state: Int, input: CharSequence, pos: Int): Boolean =
+    contextStatus(state) match
+      case TokenMatcher.Holds => true
+      case TokenMatcher.Fails => false
+      case status =>
+        if pos >= input.length then status == TokenMatcher.UndecidedNullable
+        else
+          val c = Character.codePointAt(input, pos)
+          val next = contextTransitions(state * numPartitions + TokenMatcher.partitionIndex(boundaries, c))
+          next >= 0 && contextHolds(next, input, pos + Character.charCount(c))
 
   /** First position `>= from` at which some pattern matches a non-empty prefix. */
   def findFirst(input: CharSequence, from: Int): Option[(start: Int, priority: Int, end: Int)] =
@@ -203,22 +254,109 @@ object TokenMatcher:
         queue: Queue[Seq[Subset]],
         ids: Map[Seq[Subset], Int],
         transitions: Vector[Int],
-        accept: Vector[Int],
-      ): (transitions: Array[Int], accept: Array[Int]) =
+        accepts: Vector[Accepts],
+      ): (transitions: Array[Int], accepts: Vector[Accepts]) =
         queue.dequeueOption match
-          case None => (transitions = transitions.toArray, accept = accept.toArray)
+          case None => (transitions = transitions.toArray, accepts = accepts)
           case Some((state, rest)) =>
             val (row, newIds, discovered) = deriveRow(state, ids)
-            loop(rest.enqueueAll(discovered), newIds, transitions ++ row, accept :+ firstNullable(state))
+            loop(rest.enqueueAll(discovered), newIds, transitions ++ row, accepts :+ acceptsOf(state))
 
       if maxStates < 1 then break(Left(StateSpaceLimitExceeded(maxStates)))
-      val (transitions, accept) = loop(Queue(patterns), Map(patterns -> 0), Vector.empty, Vector.empty)
+      val (transitions, accepts) = loop(Queue(patterns), Map(patterns -> 0), Vector.empty, Vector.empty)
       val numPartitions = boundaries.length
-      val fastAscii = buildFastAscii(boundaries, transitions, accept, numPartitions)
-      Right(new TokenMatcher(boundaries, transitions, accept, fastAscii))
 
-  private def firstNullable(state: Seq[Subset]): Int =
-    state.iterator.zipWithIndex.collectFirst { case (sub, idx) if sub.nullable => idx }.getOrElse(-1)
+      // Context DFA: the same derivative BFS as above, over the contexts the accepts refer to.
+      @tailrec
+      def contextLoop(
+        queue: Queue[Subset],
+        ids: Map[Subset, Int],
+        transitions: Vector[Int],
+        status: Vector[Int],
+      ): (ids: Map[Subset, Int], transitions: Array[Int], status: Array[Int]) =
+        queue.dequeueOption match
+          case None => (ids = ids, transitions = transitions.toArray, status = status.toArray)
+          case Some((context, rest)) =>
+            val (row, newIds, discovered) =
+              boundaries.foldLeft((row = Vector.empty[Int], ids = ids, discovered = Vector.empty[Subset])):
+                case ((row, ids, discovered), c) =>
+                  val next = context.derive(c)
+                  if next == Subset.empty then (row = row :+ -1, ids = ids, discovered = discovered)
+                  else
+                    ids.get(next) match
+                      case Some(id) => (row = row :+ id, ids = ids, discovered = discovered)
+                      case None =>
+                        val id = ids.size
+                        if id >= maxStates then break(Left(StateSpaceLimitExceeded(maxStates)))
+                        (row = row :+ id, ids = ids.updated(next, id), discovered = discovered :+ next)
+            contextLoop(rest.enqueueAll(discovered), newIds, transitions ++ row, status :+ contextStatusOf(context))
+
+      val initialContexts = accepts.flatMap(_.conditional.map(_.context)).distinct
+      if initialContexts.sizeIs > maxStates then break(Left(StateSpaceLimitExceeded(maxStates)))
+      val (contextIds, contextTransitions, contextStatus) =
+        contextLoop(Queue.from(initialContexts), initialContexts.zipWithIndex.toMap, Vector.empty, Vector.empty)
+
+      // Flattens each state's `Accepts` into `accept`/`contexts` - see the class doc comment.
+      val (accept, contexts) = accepts.foldLeft((accept = Vector.empty[Int], contexts = Vector.empty[Int])):
+        case ((accept, contexts), Accepts(conditional, otherwise)) =>
+          if conditional.isEmpty then (accept = accept :+ otherwise, contexts = contexts)
+          else
+            val entry = conditional.size +: conditional.flatMap(c => Vector(c.priority, contextIds(c.context))) :+
+              otherwise
+            (accept = accept :+ (-2 - contexts.size), contexts = contexts ++ entry)
+
+      val acceptArray = accept.toArray
+      val fastAscii = buildFastAscii(boundaries, transitions, acceptArray, numPartitions)
+      Right(
+        new TokenMatcher(
+          boundaries,
+          transitions,
+          acceptArray,
+          fastAscii,
+          contexts.toArray,
+          contextTransitions,
+          contextStatus,
+        ),
+      )
+
+  /**
+   * Which patterns accept in a DFA state: the ones whose acceptance depends on the input that
+   * follows (`conditional`, in priority order), then the first that accepts whatever follows
+   * (`otherwise`, or `-1`). Patterns after that one can never win, so they aren't listed.
+   */
+  private final case class Accepts(conditional: Vector[(priority: Int, context: Subset)], otherwise: Int)
+
+  private def acceptsOf(state: Seq[Subset]): Accepts =
+    @tailrec def loop(idx: Int, conditional: Vector[(priority: Int, context: Subset)]): Accepts =
+      if idx == state.size then Accepts(conditional, -1)
+      else
+        val sub = state(idx)
+        if !sub.underlying.hasLook then if sub.nullable then Accepts(conditional, idx) else loop(idx + 1, conditional)
+        else
+          val context = sub.emptyContext
+          contextStatusOf(context) match
+            case Holds => Accepts(conditional, idx)
+            case Fails => loop(idx + 1, conditional)
+            case _ => loop(idx + 1, conditional.appended((priority = idx, context = context)))
+    loop(0, Vector.empty)
+
+  /** Context state status: holds for every remaining input. */
+  inline private val Holds = 2
+
+  /** Context state status: holds for no remaining input. */
+  inline private val Fails = 3
+
+  /** Context state status: undecided, and fails at the end of input. */
+  inline private val Undecided = 0
+
+  /** Context state status: undecided, and holds at the end of input. */
+  inline private val UndecidedNullable = 1
+
+  private def contextStatusOf(context: Subset): Int =
+    if context.isEmpty then Fails
+    else if Subset.of(!context.underlying).isEmpty then Holds
+    else if context.nullable then UndecidedNullable
+    else Undecided
 
   /**
    * Precomputes, for every ASCII code point, whether matching it as a single character from the
@@ -276,6 +414,9 @@ object TokenMatcher:
           ${ Expr(m.transitions) },
           ${ Expr(m.accept) },
           ${ Expr(m.fastAscii) },
+          ${ Expr(m.contexts) },
+          ${ Expr(m.contextTransitions) },
+          ${ Expr(m.contextStatus) },
         )
       }
   // $COVERAGE-ON$

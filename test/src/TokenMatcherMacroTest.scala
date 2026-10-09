@@ -66,3 +66,10 @@ class TokenMatcherMacroTest extends munit.FunSuite, UnionSafeCompare:
       s"unexpected message: ${errors.head.message}",
     )
   }
+
+  test("tokenMatcher keeps the trailing-lookahead tables through ToExpr") {
+    val m = tokenMatcher("a(?=b)", "a$", "a")
+    assertEquals(m.matchAt("ab", 0), (priority = 0, end = 1))
+    assertEquals(m.matchAt("a", 0), (priority = 1, end = 1))
+    assertEquals(m.matchAt("ac", 0), (priority = 2, end = 1))
+  }

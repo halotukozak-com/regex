@@ -246,3 +246,11 @@ class SubsetTest extends munit.FunSuite:
   test("subsetBounded fails fast once the cap is too small") {
     assert(disjointIntersection.subsetBounded(s(Empty), 1).isLeft)
   }
+
+  test("canMatchNonEmpty: lookaheads at the end of the match see the input that follows") {
+    for pattern <- Seq("a", "a*", "a(?=b)", "a?(?=b)", "a$", "a(?!b)", "(?=a)a") do
+      assert(s(pattern).canMatchNonEmpty, pattern)
+    for pattern <- Seq("", "(?=a)", "(?!a)", "$", "a(?=b)(?!b)", "a(?=b)c?(?=d)") do
+      assert(!s(pattern).canMatchNonEmpty, pattern)
+    assert(!s(Empty).canMatchNonEmpty)
+  }
