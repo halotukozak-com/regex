@@ -235,6 +235,22 @@ enum Regex:
     case Look(r, _) => r.hasStartAnchor
     case Group(_, _, inner) => inner.hasStartAnchor
 
+  /**
+   * Cached: whether any [[Look]] node is reachable. Lets `Subset.emptyContext` answer from
+   * [[nullable]] alone for the lookahead-free patterns that make up nearly every lexer, the
+   * same way [[hasStartAnchor]] keeps `Subset.stripStartAnchor` cheap.
+   */
+  @threadUnsafe private[regex] lazy val hasLook: Boolean = this match
+    case Look(_, _) => true
+    case Eps | Empty | Chars(_) | StartAnchor => false
+    case Concat(a, b) => a.hasLook || b.hasLook
+    case Alt(parts) => parts.exists(_.hasLook)
+    case Inter(parts) => parts.exists(_.hasLook)
+    case Star(inner) => inner.hasLook
+    case Repeat(inner, _, _) => inner.hasLook
+    case Compl(inner) => inner.hasLook
+    case Group(_, _, inner) => inner.hasLook
+
   /** Alternation: `this | other`, preferring `this` - see [[Regex.Alt]]'s doc comment. */
   infix def |(other: Regex): Regex = Regex.alt(Vector(this, other))
 

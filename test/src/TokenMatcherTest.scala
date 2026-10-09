@@ -338,3 +338,83 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
     val m = matcher("[a-z]+", s"[a-z$grin]+")
     assertEquals(m.matchAt(s"ab${grin}c", 0), (priority = 1, end = 5))
   }
+
+  // A lookahead at the end of a token sees the input after the token, not the end of input (#120).
+
+  test("a trailing lookahead checks the input after the token") {
+    val m = matcher("a(?=b)")
+    assertEquals(m.matchAt("ab", 0), (priority = 0, end = 1))
+    assertEquals(m.matchAt("ac", 0), null)
+    assertEquals(m.matchAt("a", 0), null)
+  }
+
+  test("a lookahead before the rest of the pattern is unaffected") {
+    val m = matcher("(?=a)a")
+    assertEquals(m.matchAt("ab", 0), (priority = 0, end = 1))
+    assertEquals(m.matchAt("b", 0), null)
+  }
+
+  test("an optional prefix before a trailing lookahead") {
+    val m = matcher("a?(?=b)")
+    assertEquals(m.matchAt("ab", 0), (priority = 0, end = 1))
+    assertEquals(m.matchAt("b", 0), (priority = 0, end = 0))
+    assertEquals(m.matchAt("a", 0), null)
+  }
+
+  test("a lone lookahead matches the empty string only where it holds") {
+    assertEquals(matcher("(?=a)").matchAt("ab", 0), (priority = 0, end = 0))
+    assertEquals(matcher("(?=a)").matchAt("b", 0), null)
+    assertEquals(matcher("(?!a)").matchAt("ab", 0), null)
+    assertEquals(matcher("(?!a)").matchAt("b", 0), (priority = 0, end = 0))
+    assertEquals(matcher("(?!a)").matchAt("", 0), (priority = 0, end = 0))
+  }
+
+  test("a trailing negative lookahead checks the input after the token") {
+    val m = matcher("a(?!b)")
+    assertEquals(m.matchAt("ab", 0), null)
+    assertEquals(m.matchAt("ac", 0), (priority = 0, end = 1))
+    assertEquals(m.matchAt("a", 0), (priority = 0, end = 1))
+  }
+
+  test("$ and \\z only match at the end of the input, not the end of the token") {
+    for pattern <- Seq("a$", "a\\z") do
+      val m = matcher(pattern)
+      assertEquals(m.matchAt("ab", 0), null, pattern)
+      assertEquals(m.matchAt("a", 0), (priority = 0, end = 1), pattern)
+      assertEquals(m.matchAt("ba", 1), (priority = 0, end = 2), pattern)
+  }
+
+  test("a lookahead may need to read past several characters") {
+    val m = matcher("a(?=b*c)")
+    assertEquals(m.matchAt("abbbc", 0), (priority = 0, end = 1))
+    assertEquals(m.matchAt("abbbd", 0), null)
+    assertEquals(m.matchAt("abbb", 0), null)
+  }
+
+  test("a pattern whose lookahead fails leaves the position to the next pattern") {
+    val m = matcher("a(?=b)", "a")
+    assertEquals(m.matchAt("ab", 0), (priority = 0, end = 1))
+    assertEquals(m.matchAt("ac", 0), (priority = 1, end = 1))
+  }
+
+  test("an earlier pattern that accepts unconditionally wins over a later lookahead") {
+    val m = matcher("a", "a(?=b)")
+    assertEquals(m.matchAt("ab", 0), (priority = 0, end = 1))
+  }
+
+  test("longest match still wins when a longer token's lookahead holds") {
+    val m = matcher("ab(?=c)", "a")
+    assertEquals(m.matchAt("abc", 0), (priority = 0, end = 2))
+    assertEquals(m.matchAt("abd", 0), (priority = 1, end = 1))
+  }
+
+  test("findFirst skips positions where a trailing lookahead fails") {
+    assertEquals(matcher("a$").findFirst("aba", 0), Some((start = 2, priority = 0, end = 3)))
+    assertEquals(matcher("a(?=b)").findFirst("acab", 0), Some((start = 2, priority = 0, end = 3)))
+  }
+
+  test("the bounded builder counts lookahead context states toward the cap") {
+    val patterns = Seq(parse("a(?=bcdefgh)"))
+    assert(TokenMatcher.fromRegexesBounded(3)(patterns*).isLeft)
+    assert(TokenMatcher.fromRegexesBounded(100)(patterns*).isRight)
+  }

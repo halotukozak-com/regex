@@ -143,6 +143,34 @@ object Subset:
     def nullable: Boolean = a.nullable
 
     /**
+     * The inputs `u` such that `a` matches the empty string at a position followed by `u` - what
+     * [[nullable]] answers for `u = ε` only. They differ exactly when a lookahead is in play:
+     * `(?=b)` isn't nullable, yet matches the empty string right before a `b`. [[TokenMatcher]]
+     * needs this form, since a token ends wherever the next one starts, not at the end of input.
+     * `ε ∈ L(a.emptyContext)` iff `a.nullable`.
+     */
+    private[regex] def emptyContext: Subset = contextOf(a)
+
+    /**
+     * `true` iff `a`, matched as a token at the start of some input, can consume at least one
+     * character - lookaheads at the end of the match see the input that follows, as in
+     * [[TokenMatcher]]. So `a(?=b)` can (it matches the `a` of `ab`), while `(?=a)` and `(?!a)`
+     * can't: they only ever match the empty string. Unlike [[isEmpty]], which treats the end of
+     * a match as the end of the input, so `L(a(?=b))` is empty.
+     */
+    def canMatchNonEmpty: Boolean =
+      @tailrec def loop(queue: Queue[Regex], visited: Set[Regex]): Boolean =
+        queue.dequeueOption match
+          case None => false
+          case Some((s, rest)) =>
+            if !s.emptyContext.isEmpty then true
+            else
+              val next = deriveAt(partitionReps(s), 0, s, Nil).filterNot(visited.contains)
+              loop(rest.enqueueAll(next), visited ++ next)
+      val first = deriveAt(partitionReps(a), 0, a, Nil).distinct
+      loop(Queue.from(first), first.toSet)
+
+    /**
      * Brzozowski derivative of `a` with respect to code point `c`. Wrapped with
      * `stripStartAnchor`: whatever `rawDerive` returns represents "having consumed `c` from
      * `a`", meaning at least one character has now been consumed *somewhere* in the whole
@@ -217,6 +245,26 @@ object Subset:
         throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): ${g.toString}")
     })
   }
+
+  /**
+   * See the [[emptyContext]] extension. `a·b` matches `ε` before `u` iff both halves do, so
+   * concatenation intersects; a lookahead `(?=r)` holds before `u` iff some prefix of `u`
+   * matches `r`, i.e. `u ∈ L(r·Σ*)`; everything else follows [[Regex.nullable]] case by case.
+   */
+  private def contextOf(r: Regex): Regex = deepRecursive:
+    r match
+      // Inside the match, not before it: `deepRecursive` re-enters here, not at the top.
+      case _ if !r.hasLook => if r.nullable then Regex.all else Empty
+      case Look(inner, positive) => if positive then inner.concat(Regex.all) else !inner.concat(Regex.all)
+      case Concat(a, b) => contextOf(a) & contextOf(b)
+      case Alt(parts) => Regex.alt(parts.toVector.map(contextOf))
+      case Inter(parts) => Regex.inter(parts.map(contextOf))
+      case Repeat(inner, lo, _) => if lo == 0 then Regex.all else contextOf(inner)
+      case Compl(inner) => !contextOf(inner)
+      case g: Group =>
+        throw MatchError(s"unreachable: Subset never sees Group nodes (erased by Subset.of): ${g.toString}")
+      // Star is always nullable, so it accepts whatever follows; the rest can't contain a Look.
+      case _ => Regex.all
 
   /**
    * `reps` is `Array[Int]`, not `List[Int]`: `List[Int]` boxes every element as a

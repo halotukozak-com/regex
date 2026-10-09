@@ -138,6 +138,11 @@ DFA from patterns not known until runtime (e.g. loaded from a config file); the
 `fromRegexesBounded`/`fromSubsetsBounded` variants cap DFA construction the same way
 `Subset.subsetBounded` caps containment checks, for untrusted pattern lists.
 
+A lookahead at the end of a token sees the input after it: `a(?=b)` matches the `a` of `ab`, and
+`a$` matches only at the end of the input. `Subset.canMatchNonEmpty` answers the matching
+question for one pattern, whether it can ever consume a character as a token, so a lexer can
+reject rules like `(?=a)` that only match the empty string.
+
 ## Status
 
 Early (`0.x`). The parser deliberately supports a subset of `java.util.regex.Pattern`'s syntax —
