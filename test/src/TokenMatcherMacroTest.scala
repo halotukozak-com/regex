@@ -66,3 +66,19 @@ class TokenMatcherMacroTest extends munit.FunSuite, UnionSafeCompare:
       s"unexpected message: ${errors.head.message}",
     )
   }
+
+  test("anchors are supported at compile time") {
+    val m = tokenMatcher("^a", "a$", "b")
+    assertEquals(m.matchAt("aba", 0), (priority = 0, end = 1))
+    assertEquals(m.matchAt("aba", 1), (priority = 2, end = 2))
+    assertEquals(m.matchAt("aba", 2), (priority = 1, end = 3))
+  }
+
+  test("a lookahead fails to compile with a message naming the pattern") {
+    val errors = typeCheckErrors("""_root_.halotukozak.regex.tokenMatcher("b", "a(?=b)")""")
+    assertEquals(errors.size, 1)
+    assert(
+      errors.head.message.contains("\"a(?=b)\"") && errors.head.message.contains("lookahead `(?=...)`"),
+      s"unexpected message: ${errors.head.message}",
+    )
+  }

@@ -235,6 +235,23 @@ enum Regex:
     case Look(r, _) => r.hasStartAnchor
     case Group(_, _, inner) => inner.hasStartAnchor
 
+  /**
+   * Cached: like [[nullable]], but at a position followed by more input instead of at the end of
+   * it - where [[TokenMatcher]] checks every token end but the last. The two differ only on the
+   * end-of-input lookahead `(?!.)` that `$`/`\Z`/`\z` parse to, which fails here. Any other
+   * [[Look]] would depend on what that input is; [[TokenMatcher]] rejects those before asking.
+   */
+  @threadUnsafe private[regex] lazy val nullableBeforeMoreInput: Boolean = this match
+    case Look(_, _) if this == RegexParser.endOfInput => false
+    case Look(_, _) => throw MatchError(s"unreachable: TokenMatcher rejects every other lookahead: $toString")
+    case Concat(a, b) => a.nullableBeforeMoreInput && b.nullableBeforeMoreInput
+    case Alt(parts) => parts.exists(_.nullableBeforeMoreInput)
+    case Inter(parts) => parts.forall(_.nullableBeforeMoreInput)
+    case Repeat(r, lo, _) => lo == 0 || r.nullableBeforeMoreInput
+    case Compl(inner) => !inner.nullableBeforeMoreInput
+    case Group(_, _, inner) => inner.nullableBeforeMoreInput
+    case Eps | Empty | Chars(_) | Star(_) | StartAnchor => nullable
+
   /** Alternation: `this | other`, preferring `this` - see [[Regex.Alt]]'s doc comment. */
   infix def |(other: Regex): Regex = Regex.alt(Vector(this, other))
 

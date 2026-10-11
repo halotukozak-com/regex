@@ -141,7 +141,7 @@ object RegexParser:
    * follow", i.e. `(?!.)` with `.` meaning *any* code point, not the `dotDefault` used for a
    * literal `.` atom.
    */
-  private val endOfInput: Regex = Regex.lookahead(Regex(CharSet.all), positive = false)
+  private[regex] val endOfInput: Regex = Regex.lookahead(Regex(CharSet.all), positive = false)
 
   /**
    * Parse `pattern` into a [[Regex]]. Returns [[Left]] with structured error info if the

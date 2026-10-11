@@ -338,3 +338,74 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
     val m = matcher("[a-z]+", s"[a-z$grin]+")
     assertEquals(m.matchAt(s"ab${grin}c", 0), (priority = 1, end = 5))
   }
+
+  // Anchors and lookahead (#120, #123) ----------------------------------------
+  // A token ends where the next one starts, not at the end of the input, so `^`/`\A` hold only
+  // at offset 0 of the input and `$`/`\Z`/`\z` only at its end. Other lookaheads would need the
+  // input after the token and are rejected.
+
+  test("^ and \\A match only at the start of the input") {
+    for pattern <- Seq("^a", "\\Aa") do
+      val m = matcher(pattern)
+      assertEquals(m.matchAt("aba", 0), (priority = 0, end = 1), pattern)
+      assertEquals(m.matchAt("aba", 2), null, pattern)
+      assertEquals(m.findFirst("aba", 1), None, pattern)
+  }
+
+  test("^ in one pattern leaves the other patterns matching anywhere") {
+    val m = matcher("^a", "a")
+    assertEquals(m.matchAt("aba", 0), (priority = 0, end = 1))
+    assertEquals(m.matchAt("aba", 2), (priority = 1, end = 3))
+  }
+
+  test("$, \\Z and \\z match only at the end of the input") {
+    for pattern <- Seq("a$", "a\\Z", "a\\z") do
+      val m = matcher(pattern)
+      assertEquals(m.matchAt("aba", 0), null, pattern)
+      assertEquals(m.matchAt("aba", 2), (priority = 0, end = 3), pattern)
+      assertEquals(m.findFirst("aba", 0), Some((start = 2, priority = 0, end = 3)), pattern)
+  }
+
+  test("$ decides the winner by whether the token ends the input") {
+    val m = matcher("a$", "a")
+    assertEquals(m.matchAt("ab", 0), (priority = 1, end = 1))
+    assertEquals(m.matchAt("a", 0), (priority = 0, end = 1))
+  }
+
+  test("a pattern of only anchors matches the empty string at the start or end of the input") {
+    assertEquals(matcher("^").matchAt("a", 0), (priority = 0, end = 0))
+    assertEquals(matcher("^").matchAt("a", 1), null)
+    assertEquals(matcher("$").matchAt("a", 0), null)
+    assertEquals(matcher("$").matchAt("a", 1), (priority = 0, end = 1))
+  }
+
+  test("fromRegexes rejects a lookahead other than the end-of-input anchors") {
+    for pattern <- Seq("a(?=b)", "a(?!b)", "(?=a)a") do
+      val error = intercept[IllegalArgumentException](matcher(pattern))
+      assert(error.getMessage.nn.contains("lookahead"), s"unexpected message for $pattern: ${error.getMessage}")
+  }
+
+  test("fromRegexesChecked names the rejected lookahead and the pattern using it") {
+    assertEquals(
+      TokenMatcher.fromRegexesChecked(parse("x"), parse("a(?=b)")).left.map(_.toString),
+      Left(
+        "lookahead `(?=...)` is not supported in a token pattern: it would have to see the input after the token " +
+          "(only `$`, `\\Z` and `\\z` can) (pattern 1)",
+      ),
+    )
+    assertEquals(
+      TokenMatcher.fromRegexesChecked(parse("a(?!b)")),
+      Left(UnsupportedTokenConstruct(0, "negative lookahead `(?!...)`")),
+    )
+  }
+
+  test("fromRegexesChecked builds a matcher when every construct is supported") {
+    val checked = TokenMatcher.fromRegexesChecked(parse("^a"), parse("a$")).toOption.get
+    assertEquals(checked.matchAt("aa", 0), (priority = 0, end = 1))
+    assertEquals(checked.matchAt("aa", 1), (priority = 1, end = 2))
+  }
+
+  test("fromRegexesBounded counts the start state at offset 0 toward the cap") {
+    assertEquals(TokenMatcher.fromRegexesBounded(1)(parse("^a")), Left(StateSpaceLimitExceeded(1)))
+    intercept[IllegalArgumentException](TokenMatcher.fromRegexesBounded(10)(parse("a(?=b)")))
+  }
