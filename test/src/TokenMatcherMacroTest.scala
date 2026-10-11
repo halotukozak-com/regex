@@ -66,3 +66,12 @@ class TokenMatcherMacroTest extends munit.FunSuite, UnionSafeCompare:
       s"unexpected message: ${errors.head.message}",
     )
   }
+
+  test("a construct TokenMatcher doesn't support fails to compile with a message naming the pattern") {
+    val errors = typeCheckErrors("""_root_.halotukozak.regex.tokenMatcher("b", "^a")""")
+    assertEquals(errors.size, 1)
+    assertEquals(
+      errors.head.message,
+      "start-of-input anchor `^`/`\\A` is not supported in a TokenMatcher pattern (in \"^a\")",
+    )
+  }
