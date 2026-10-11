@@ -338,3 +338,45 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
     val m = matcher("[a-z]+", s"[a-z$grin]+")
     assertEquals(m.matchAt(s"ab${grin}c", 0), (priority = 1, end = 5))
   }
+
+  // Constructs depending on the input around the token (#120, #123) -----------
+  // A DFA state only knows what the token itself consumed, so lookahead and anchors are rejected
+  // instead of being judged as if the token were the whole input.
+
+  private def unsupportedConstructs = Seq(
+    "a(?=b)" -> "lookahead `(?=...)`",
+    "(?=a)a" -> "lookahead `(?=...)`",
+    "a(?!b)" -> "negative lookahead `(?!...)`",
+    "^a" -> "start-of-input anchor `^`/`\\A`",
+    "\\Aa" -> "start-of-input anchor `^`/`\\A`",
+    "(x|^)a" -> "start-of-input anchor `^`/`\\A`",
+    "a$" -> "end-of-input anchor `$`/`\\Z`/`\\z`",
+    "a\\Z" -> "end-of-input anchor `$`/`\\Z`/`\\z`",
+    "a\\z" -> "end-of-input anchor `$`/`\\Z`/`\\z`",
+    "(a$)*b" -> "end-of-input anchor `$`/`\\Z`/`\\z`",
+  )
+
+  for (pattern, construct) <- unsupportedConstructs do {
+    test(s"fromRegexes rejects $pattern, naming the construct and the pattern") {
+      val error = intercept[IllegalArgumentException](matcher("x", pattern))
+      assertEquals(error.getMessage, s"$construct is not supported in a TokenMatcher pattern (pattern 1)")
+    }
+
+    test(s"fromRegexesChecked returns the unsupported construct in $pattern as a Left") {
+      assertEquals(
+        TokenMatcher.fromRegexesChecked(parse("x"), parse(pattern)),
+        Left(UnsupportedTokenConstruct(1, construct)),
+      )
+    }
+  }
+
+  test("fromRegexesChecked builds the same matcher as fromRegexes when every construct is supported") {
+    val checked = TokenMatcher.fromRegexesChecked(parse("if"), parse("[a-z]+")).toOption.get
+    assertEquals(checked.matchAt("ifx", 0), (priority = 1, end = 3))
+    assertEquals(checked.matchAt("if", 0), (priority = 0, end = 2))
+  }
+
+  test("the bounded builders reject unsupported constructs too") {
+    intercept[IllegalArgumentException](TokenMatcher.fromRegexesBounded(10)(parse("^a")))
+    intercept[IllegalArgumentException](TokenMatcher.fromSubsetsBounded(10)(Subset.of(parse("a(?=b)"))))
+  }

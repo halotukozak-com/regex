@@ -46,7 +46,11 @@ inline def tokenMatcher(inline patterns: String*): TokenMatcher = ${ tokenMatche
               case Left(error) => report.errorAndAbort(s"Regex parse error: ${error.toString}", patternExpr)
               case Right(regex) => regex
       }
-      Expr(TokenMatcher.fromRegexes(regexes*))
+      TokenMatcher.fromRegexesChecked(regexes*) match
+        case Left(error) =>
+          val patternExpr = patternExprs(error.patternIndex)
+          report.errorAndAbort(s"""${error.message} (in "${patternExpr.valueOrAbort}")""", patternExpr)
+        case Right(matcher) => Expr(matcher)
     case _ =>
       report.errorAndAbort("tokenMatcher requires a literal, statically-known list of pattern strings", patternsExpr)
 
@@ -71,6 +75,11 @@ inline def tokenMatcher(inline patterns: String*): TokenMatcher = ${ tokenMatche
  * (unrepresented) dead state, i.e. every pattern's derivative going empty.
  *
  * `accept(state)` is the lowest pattern index nullable in that state, or `-1` if none is.
+ *
+ * A token ends wherever the next one starts and starts wherever the previous one ended, but a
+ * DFA state only knows what the token itself consumed. So the builders reject the constructs
+ * that depend on the input around the token: lookahead and the `^`/`\A`, `$`/`\Z`/`\z` anchors -
+ * see [[UnsupportedTokenConstruct]].
  *
  * A pattern containing [[Regex.Group]] nodes (capturing/named groups) compiles fine - they're
  * erased the same way [[Subset.of]] erases them for containment checks (`fromRegexes`/
@@ -144,27 +153,83 @@ final class TokenMatcher @publicInBinary private (
       .collectFirst:
         case (start, m) if m != null && m.end > start => (start, m.priority, m.end)
 
+/**
+ * Pattern `patternIndex` of a [[TokenMatcher]] uses `construct`, which depends on the input
+ * around the token and so can't be matched by it: a lookahead, or a `^`/`\A`, `$`/`\Z`/`\z`
+ * anchor. Returned by [[TokenMatcher.fromRegexesChecked]]; the other builders throw it as an
+ * `IllegalArgumentException`. Whole-string matching ([[Subset]], [[CaptureMatcher]]) supports
+ * all of them.
+ */
+final case class UnsupportedTokenConstruct(patternIndex: Int, construct: String):
+  def message: String = s"$construct is not supported in a TokenMatcher pattern"
+  override def toString: String = s"$message (pattern $patternIndex)"
+
 object TokenMatcher:
 
-  /** Build a matcher from pre-parsed regexes (use this from macros after compile-time parsing). */
+  /**
+   * Build a matcher from pre-parsed regexes (use this from macros after compile-time parsing).
+   *
+   * @throws IllegalArgumentException if a pattern uses a construct [[fromRegexesChecked]] rejects
+   */
   def fromRegexes(initial: Regex*): TokenMatcher = fromSubsets(initial.map(Subset.of)*)
 
-  /** Build a matcher from pre-parsed subsets (use this from macros after compile-time parsing). */
+  /**
+   * Build a matcher from pre-parsed subsets (use this from macros after compile-time parsing).
+   *
+   * @throws IllegalArgumentException if a pattern uses a construct [[fromRegexesChecked]] rejects
+   */
   def fromSubsets(initial: Subset*): TokenMatcher =
+    requireSupported(initial)
     compile(initial, Int.MaxValue).getOrElse(throw MatchError("unreachable: Int.MaxValue state cap exceeded"))
+
+  /**
+   * Like [[fromRegexes]], but returns the first [[UnsupportedTokenConstruct]] as a `Left` instead
+   * of throwing it.
+   */
+  def fromRegexesChecked(initial: Regex*): Either[UnsupportedTokenConstruct, TokenMatcher] =
+    val patterns = initial.map(Subset.of)
+    unsupportedConstruct(patterns)
+      .toLeft(compile(patterns, Int.MaxValue).getOrElse(throw MatchError("unreachable: Int.MaxValue state cap exceeded")))
 
   /**
    * Like [[fromRegexes]], but fails fast with `Left(StateSpaceLimitExceeded(maxStates))` instead
    * of exploring more than `maxStates` distinct derivative states while building the DFA - see
    * [[StateSpaceLimitExceeded]]. Opt-in: [[fromRegexes]] itself stays uncapped for existing
    * callers.
+   *
+   * @throws IllegalArgumentException if a pattern uses a construct [[fromRegexesChecked]] rejects
    */
   def fromRegexesBounded(maxStates: Int)(initial: Regex*): Either[StateSpaceLimitExceeded, TokenMatcher] =
     fromSubsetsBounded(maxStates)(initial.map(Subset.of)*)
 
   /** Like [[fromSubsets]], but capped the way [[fromRegexesBounded]] caps [[fromRegexes]]. */
   def fromSubsetsBounded(maxStates: Int)(initial: Subset*): Either[StateSpaceLimitExceeded, TokenMatcher] =
+    requireSupported(initial)
     compile(initial, maxStates)
+
+  private def requireSupported(patterns: Seq[Subset]): Unit =
+    unsupportedConstruct(patterns).foreach(error => throw IllegalArgumentException(error.toString))
+
+  /** The first construct some pattern uses that a token can't be matched with - see [[UnsupportedTokenConstruct]]. */
+  private def unsupportedConstruct(patterns: Seq[Subset]): Option[UnsupportedTokenConstruct] =
+    @tailrec
+    def constructIn(pending: List[Regex]): Option[String] = pending match
+      case Nil => None
+      case RegexParser.endOfInput :: _ => Some("end-of-input anchor `$`/`\\Z`/`\\z`")
+      case Regex.StartAnchor :: _ => Some("start-of-input anchor `^`/`\\A`")
+      case Regex.Look(_, positive) :: _ =>
+        Some(if positive then "lookahead `(?=...)`" else "negative lookahead `(?!...)`")
+      case Regex.Concat(first, second) :: rest => constructIn(first :: second :: rest)
+      case Regex.Alt(parts) :: rest => constructIn(parts.toList ++ rest)
+      case Regex.Inter(parts) :: rest => constructIn(parts.toList ++ rest)
+      case Regex.Star(inner) :: rest => constructIn(inner :: rest)
+      case Regex.Repeat(inner, _, _) :: rest => constructIn(inner :: rest)
+      case Regex.Compl(inner) :: rest => constructIn(inner :: rest)
+      case Regex.Group(_, _, inner) :: rest => constructIn(inner :: rest)
+      case (Regex.Eps | Regex.Empty | Regex.Chars(_)) :: rest => constructIn(rest)
+    patterns.iterator.zipWithIndex.collectFirst(Function.unlift { (pattern, patternIndex) =>
+      constructIn(List(pattern.underlying)).map(UnsupportedTokenConstruct(patternIndex, _))
+    })
 
   private def compile(patterns: Seq[Subset], maxStates: Int): Either[StateSpaceLimitExceeded, TokenMatcher] =
     boundary:
