@@ -339,7 +339,7 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
     assertEquals(m.matchAt(s"ab${grin}c", 0), (priority = 1, end = 5))
   }
 
-  // Anchors and lookahead (#120, #123) ----------------------------------------
+  // Constructs depending on the input around the token (#120, #123) -----------
   // A token ends where the next one starts, not at the end of the input, so `^`/`\A` hold only
   // at offset 0 of the input and `$`/`\Z`/`\z` only at its end. Other lookaheads would need the
   // input after the token and are rejected.
@@ -379,33 +379,41 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
     assertEquals(matcher("$").matchAt("a", 1), (priority = 0, end = 1))
   }
 
-  test("fromRegexes rejects a lookahead other than the end-of-input anchors") {
-    for pattern <- Seq("a(?=b)", "a(?!b)", "(?=a)a") do
-      val error = intercept[IllegalArgumentException](matcher(pattern))
-      assert(error.getMessage.nn.contains("lookahead"), s"unexpected message for $pattern: ${error.getMessage}")
+  private def unsupportedConstructs = Seq(
+    "a(?=b)" -> "lookahead `(?=...)`",
+    "(?=a)a" -> "lookahead `(?=...)`",
+    "a(?!b)" -> "negative lookahead `(?!...)`",
+    "^a(?=b)$" -> "lookahead `(?=...)`",
+  )
+
+  for (pattern, construct) <- unsupportedConstructs do {
+    test(s"fromRegexes rejects $pattern, naming the construct and the pattern") {
+      val error = intercept[IllegalArgumentException](matcher("x", pattern))
+      assertEquals(error.getMessage, s"$construct is not supported in a TokenMatcher pattern (pattern 1)")
+    }
+
+    test(s"fromRegexesChecked returns the unsupported construct in $pattern as a Left") {
+      assertEquals(
+        TokenMatcher.fromRegexesChecked(parse("x"), parse(pattern)),
+        Left(UnsupportedTokenConstruct(1, construct)),
+      )
+    }
   }
 
-  test("fromRegexesChecked names the rejected lookahead and the pattern using it") {
-    assertEquals(
-      TokenMatcher.fromRegexesChecked(parse("x"), parse("a(?=b)")).left.map(_.toString),
-      Left(
-        "lookahead `(?=...)` is not supported in a token pattern: it would have to see the input after the token " +
-          "(only `$`, `\\Z` and `\\z` can) (pattern 1)",
-      ),
-    )
-    assertEquals(
-      TokenMatcher.fromRegexesChecked(parse("a(?!b)")),
-      Left(UnsupportedTokenConstruct(0, "negative lookahead `(?!...)`")),
-    )
-  }
-
-  test("fromRegexesChecked builds a matcher when every construct is supported") {
-    val checked = TokenMatcher.fromRegexesChecked(parse("^a"), parse("a$")).toOption.get
-    assertEquals(checked.matchAt("aa", 0), (priority = 0, end = 1))
-    assertEquals(checked.matchAt("aa", 1), (priority = 1, end = 2))
+  test("fromRegexesChecked builds the same matcher as fromRegexes when every construct is supported") {
+    val checked = TokenMatcher.fromRegexesChecked(parse("if"), parse("[a-z]+"), parse("^1"), parse("2$")).toOption.get
+    assertEquals(checked.matchAt("ifx", 0), (priority = 1, end = 3))
+    assertEquals(checked.matchAt("if", 0), (priority = 0, end = 2))
+    assertEquals(checked.matchAt("1", 0), (priority = 2, end = 1))
+    assertEquals(checked.matchAt("2", 0), (priority = 3, end = 1))
   }
 
   test("fromRegexesBounded counts the start state at offset 0 toward the cap") {
     assertEquals(TokenMatcher.fromRegexesBounded(1)(parse("^a")), Left(StateSpaceLimitExceeded(1)))
-    intercept[IllegalArgumentException](TokenMatcher.fromRegexesBounded(10)(parse("a(?=b)")))
+    assert(TokenMatcher.fromRegexesBounded(10)(parse("^a")).isRight)
+  }
+
+  test("the bounded builders reject unsupported constructs too") {
+    intercept[IllegalArgumentException](TokenMatcher.fromRegexesBounded(10)(parse("a(?!b)")))
+    intercept[IllegalArgumentException](TokenMatcher.fromSubsetsBounded(10)(Subset.of(parse("a(?=b)"))))
   }

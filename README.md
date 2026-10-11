@@ -139,8 +139,9 @@ DFA from patterns not known until runtime (e.g. loaded from a config file); the
 `Subset.subsetBounded` caps containment checks, for untrusted pattern lists.
 
 In a token pattern, `^`/`\A` match only at the start of the input and `$`/`\Z`/`\z` only at its
-end. Other lookaheads (`(?=...)`, `(?!...)`) are rejected: `tokenMatcher` fails to compile,
-`fromRegexesChecked` returns an `UnsupportedTokenConstruct`, and the other builders throw.
+end. Other lookaheads (`(?=...)`, `(?!...)`) would have to see the input after the token, so
+they're rejected: `tokenMatcher` fails to compile, `fromRegexesChecked` returns an
+`UnsupportedTokenConstruct`, and the other builders throw.
 
 ## Status
 

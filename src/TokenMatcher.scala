@@ -1,6 +1,6 @@
 package halotukozak.regex
 
-import scala.annotation.{publicInBinary, tailrec}
+import scala.annotation.{nowarn, publicInBinary, tailrec}
 import scala.collection.immutable.{Queue, SortedSet}
 import scala.quoted.{Expr, Quotes, ToExpr, Varargs}
 import scala.util.boundary
@@ -106,7 +106,8 @@ final class TokenMatcher @publicInBinary private (
   private val inputStartState: Int,
 ):
 
-  /** The shape `tokenMatcher(...)` expansions compiled against 0.2.x still call. */
+  /** The shape `tokenMatcher(...)` expansions compiled against 0.2.x still call; nothing here does. */
+  @nowarn("msg=unused private member")
   @publicInBinary private def this(
     boundaries: Array[Int],
     transitions: Array[Int],
@@ -171,16 +172,14 @@ final class TokenMatcher @publicInBinary private (
         case (start, m) if m != null && m.end > start => (start, m.priority, m.end)
 
 /**
- * Pattern `patternIndex` of a [[TokenMatcher]] uses `construct`, which a token can't be matched
- * with: a lookahead other than `$`/`\Z`/`\z` would have to see the input after the token. Returned
- * by [[TokenMatcher.fromRegexesChecked]]; the other builders throw it as an
- * `IllegalArgumentException`. (Whole-string matching - [[Subset]], [[CaptureMatcher]] - supports
- * every lookahead.)
+ * Pattern `patternIndex` of a [[TokenMatcher]] uses `construct`, which depends on the input
+ * after the token and so can't be matched by it: a lookahead other than the `$`/`\Z`/`\z`
+ * anchors. Returned by [[TokenMatcher.fromRegexesChecked]]; the other builders throw it as an
+ * `IllegalArgumentException`. Whole-string matching ([[Subset]], [[CaptureMatcher]]) supports
+ * every lookahead.
  */
 final case class UnsupportedTokenConstruct(patternIndex: Int, construct: String):
-  def message: String =
-    s"$construct is not supported in a token pattern: it would have to see the input after the token " +
-      "(only `$`, `\\Z` and `\\z` can)"
+  def message: String = s"$construct is not supported in a TokenMatcher pattern"
   override def toString: String = s"$message (pattern $patternIndex)"
 
 object TokenMatcher:
@@ -202,8 +201,8 @@ object TokenMatcher:
     compile(initial, Int.MaxValue).getOrElse(throw MatchError("unreachable: Int.MaxValue state cap exceeded"))
 
   /**
-   * Like [[fromRegexes]], but returns a pattern's [[UnsupportedTokenConstruct]] as a `Left`
-   * instead of throwing it.
+   * Like [[fromRegexes]], but returns the first [[UnsupportedTokenConstruct]] as a `Left` instead
+   * of throwing it.
    */
   def fromRegexesChecked(initial: Regex*): Either[UnsupportedTokenConstruct, TokenMatcher] =
     val patterns = initial.map(Subset.of)
@@ -229,24 +228,24 @@ object TokenMatcher:
   private def requireSupported(patterns: Seq[Subset]): Unit =
     unsupportedConstruct(patterns).foreach(error => throw IllegalArgumentException(error.toString))
 
-  /** The first pattern using a lookahead other than `$`/`\Z`/`\z` - see [[UnsupportedTokenConstruct]]. */
+  /** The first construct some pattern uses that a token can't be matched with - see [[UnsupportedTokenConstruct]]. */
   private def unsupportedConstruct(patterns: Seq[Subset]): Option[UnsupportedTokenConstruct] =
     @tailrec
-    def lookaheadIn(pending: List[Regex]): Option[String] = pending match
+    def constructIn(pending: List[Regex]): Option[String] = pending match
       case Nil => None
-      case RegexParser.endOfInput :: rest => lookaheadIn(rest)
+      case RegexParser.endOfInput :: rest => constructIn(rest)
       case Regex.Look(_, positive) :: _ =>
         Some(if positive then "lookahead `(?=...)`" else "negative lookahead `(?!...)`")
-      case Regex.Concat(first, second) :: rest => lookaheadIn(first :: second :: rest)
-      case Regex.Alt(parts) :: rest => lookaheadIn(parts.toList ++ rest)
-      case Regex.Inter(parts) :: rest => lookaheadIn(parts.toList ++ rest)
-      case Regex.Star(inner) :: rest => lookaheadIn(inner :: rest)
-      case Regex.Repeat(inner, _, _) :: rest => lookaheadIn(inner :: rest)
-      case Regex.Compl(inner) :: rest => lookaheadIn(inner :: rest)
-      case Regex.Group(_, _, inner) :: rest => lookaheadIn(inner :: rest)
-      case (Regex.Eps | Regex.Empty | Regex.Chars(_) | Regex.StartAnchor) :: rest => lookaheadIn(rest)
+      case Regex.Concat(first, second) :: rest => constructIn(first :: second :: rest)
+      case Regex.Alt(parts) :: rest => constructIn(parts.toList ++ rest)
+      case Regex.Inter(parts) :: rest => constructIn(parts.toList ++ rest)
+      case Regex.Star(inner) :: rest => constructIn(inner :: rest)
+      case Regex.Repeat(inner, _, _) :: rest => constructIn(inner :: rest)
+      case Regex.Compl(inner) :: rest => constructIn(inner :: rest)
+      case Regex.Group(_, _, inner) :: rest => constructIn(inner :: rest)
+      case (Regex.Eps | Regex.Empty | Regex.Chars(_) | Regex.StartAnchor) :: rest => constructIn(rest)
     patterns.iterator.zipWithIndex.collectFirst(Function.unlift { (pattern, patternIndex) =>
-      lookaheadIn(List(pattern.underlying)).map(UnsupportedTokenConstruct(patternIndex, _))
+      constructIn(List(pattern.underlying)).map(UnsupportedTokenConstruct(patternIndex, _))
     })
 
   private def compile(patterns: Seq[Subset], maxStates: Int): Either[StateSpaceLimitExceeded, TokenMatcher] =
