@@ -414,6 +414,15 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
   }
 
   test("the bounded builders reject unsupported constructs too") {
-    intercept[IllegalArgumentException](TokenMatcher.fromRegexesBounded(10)(parse("a(?!b)")))
-    intercept[IllegalArgumentException](TokenMatcher.fromSubsetsBounded(10)(Subset.of(parse("a(?=b)"))))
+    val fromRegexesError = intercept[IllegalArgumentException](TokenMatcher.fromRegexesBounded(10)(parse("a(?!b)")))
+    assertEquals(
+      fromRegexesError.getMessage,
+      "negative lookahead `(?!...)` is not supported in a TokenMatcher pattern (pattern 0)",
+    )
+    val fromSubsetsError =
+      intercept[IllegalArgumentException](TokenMatcher.fromSubsetsBounded(10)(Subset.of(parse("a(?=b)"))))
+    assertEquals(
+      fromSubsetsError.getMessage,
+      "lookahead `(?=...)` is not supported in a TokenMatcher pattern (pattern 0)",
+    )
   }
