@@ -340,20 +340,50 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
   }
 
   // Constructs depending on the input around the token (#120, #123) -----------
-  // A DFA state only knows what the token itself consumed, so lookahead and anchors are rejected
-  // instead of being judged as if the token were the whole input.
+  // A token ends where the next one starts, not at the end of the input, so `^`/`\A` hold only
+  // at offset 0 of the input and `$`/`\Z`/`\z` only at its end. Other lookaheads would need the
+  // input after the token and are rejected.
+
+  test("^ and \\A match only at the start of the input") {
+    for pattern <- Seq("^a", "\\Aa") do
+      val m = matcher(pattern)
+      assertEquals(m.matchAt("aba", 0), (priority = 0, end = 1), pattern)
+      assertEquals(m.matchAt("aba", 2), null, pattern)
+      assertEquals(m.findFirst("aba", 1), None, pattern)
+  }
+
+  test("^ in one pattern leaves the other patterns matching anywhere") {
+    val m = matcher("^a", "a")
+    assertEquals(m.matchAt("aba", 0), (priority = 0, end = 1))
+    assertEquals(m.matchAt("aba", 2), (priority = 1, end = 3))
+  }
+
+  test("$, \\Z and \\z match only at the end of the input") {
+    for pattern <- Seq("a$", "a\\Z", "a\\z") do
+      val m = matcher(pattern)
+      assertEquals(m.matchAt("aba", 0), null, pattern)
+      assertEquals(m.matchAt("aba", 2), (priority = 0, end = 3), pattern)
+      assertEquals(m.findFirst("aba", 0), Some((start = 2, priority = 0, end = 3)), pattern)
+  }
+
+  test("$ decides the winner by whether the token ends the input") {
+    val m = matcher("a$", "a")
+    assertEquals(m.matchAt("ab", 0), (priority = 1, end = 1))
+    assertEquals(m.matchAt("a", 0), (priority = 0, end = 1))
+  }
+
+  test("a pattern of only anchors matches the empty string at the start or end of the input") {
+    assertEquals(matcher("^").matchAt("a", 0), (priority = 0, end = 0))
+    assertEquals(matcher("^").matchAt("a", 1), null)
+    assertEquals(matcher("$").matchAt("a", 0), null)
+    assertEquals(matcher("$").matchAt("a", 1), (priority = 0, end = 1))
+  }
 
   private def unsupportedConstructs = Seq(
     "a(?=b)" -> "lookahead `(?=...)`",
     "(?=a)a" -> "lookahead `(?=...)`",
     "a(?!b)" -> "negative lookahead `(?!...)`",
-    "^a" -> "start-of-input anchor `^`/`\\A`",
-    "\\Aa" -> "start-of-input anchor `^`/`\\A`",
-    "(x|^)a" -> "start-of-input anchor `^`/`\\A`",
-    "a$" -> "end-of-input anchor `$`/`\\Z`/`\\z`",
-    "a\\Z" -> "end-of-input anchor `$`/`\\Z`/`\\z`",
-    "a\\z" -> "end-of-input anchor `$`/`\\Z`/`\\z`",
-    "(a$)*b" -> "end-of-input anchor `$`/`\\Z`/`\\z`",
+    "^a(?=b)$" -> "lookahead `(?=...)`",
   )
 
   for (pattern, construct) <- unsupportedConstructs do {
@@ -371,16 +401,23 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
   }
 
   test("fromRegexesChecked builds the same matcher as fromRegexes when every construct is supported") {
-    val checked = TokenMatcher.fromRegexesChecked(parse("if"), parse("[a-z]+")).toOption.get
+    val checked = TokenMatcher.fromRegexesChecked(parse("if"), parse("[a-z]+"), parse("^1"), parse("2$")).toOption.get
     assertEquals(checked.matchAt("ifx", 0), (priority = 1, end = 3))
     assertEquals(checked.matchAt("if", 0), (priority = 0, end = 2))
+    assertEquals(checked.matchAt("1", 0), (priority = 2, end = 1))
+    assertEquals(checked.matchAt("2", 0), (priority = 3, end = 1))
+  }
+
+  test("fromRegexesBounded counts the start state at offset 0 toward the cap") {
+    assertEquals(TokenMatcher.fromRegexesBounded(1)(parse("^a")), Left(StateSpaceLimitExceeded(1)))
+    assert(TokenMatcher.fromRegexesBounded(10)(parse("^a")).isRight)
   }
 
   test("the bounded builders reject unsupported constructs too") {
-    val fromRegexesError = intercept[IllegalArgumentException](TokenMatcher.fromRegexesBounded(10)(parse("^a")))
+    val fromRegexesError = intercept[IllegalArgumentException](TokenMatcher.fromRegexesBounded(10)(parse("a(?!b)")))
     assertEquals(
       fromRegexesError.getMessage,
-      "start-of-input anchor `^`/`\\A` is not supported in a TokenMatcher pattern (pattern 0)",
+      "negative lookahead `(?!...)` is not supported in a TokenMatcher pattern (pattern 0)",
     )
     val fromSubsetsError =
       intercept[IllegalArgumentException](TokenMatcher.fromSubsetsBounded(10)(Subset.of(parse("a(?=b)"))))

@@ -1,6 +1,6 @@
 package halotukozak.regex
 
-import scala.annotation.{publicInBinary, tailrec}
+import scala.annotation.{nowarn, publicInBinary, tailrec}
 import scala.collection.immutable.{Queue, SortedSet}
 import scala.quoted.{Expr, Quotes, ToExpr, Varargs}
 import scala.util.boundary
@@ -74,12 +74,16 @@ inline def tokenMatcher(inline patterns: String*): TokenMatcher = ${ tokenMatche
  * `transitions` is `numStates * boundaries.length` entries, row-major by state; `-1` marks the
  * (unrepresented) dead state, i.e. every pattern's derivative going empty.
  *
- * `accept(state)` is the lowest pattern index nullable in that state, or `-1` if none is.
+ * `accept(state)` is the lowest pattern index nullable in that state at a position followed by
+ * more input, or `-1` if none is; `acceptAtEnd(state)` is the same at the end of the input. They
+ * differ only for `$`/`\Z`/`\z` (see [[Regex.nullableBeforeMoreInput]]): a token ends wherever the
+ * next one starts, so those hold only when it's the last one. Any other lookahead would have to
+ * see the input after the token, so the builders reject it - see [[UnsupportedTokenConstruct]].
  *
- * A token ends wherever the next one starts and starts wherever the previous one ended, but a
- * DFA state only knows what the token itself consumed. So the builders reject the constructs
- * that depend on the input around the token: lookahead and the `^`/`\A`, `$`/`\Z`/`\z` anchors -
- * see [[UnsupportedTokenConstruct]].
+ * State 0 starts a match past the start of the input, `inputStartState` one at offset 0. They
+ * differ only when a pattern uses `^`/`\A`, which holds only at offset 0 (state 0 starts from the
+ * patterns with every `^`/`\A` already failed, like any derivative). `fastAscii` is built from
+ * state 0, so it's skipped for a match at offset 0 whenever the two differ.
  *
  * A pattern containing [[Regex.Group]] nodes (capturing/named groups) compiles fine - they're
  * erased the same way [[Subset.of]] erases them for containment checks (`fromRegexes`/
@@ -97,8 +101,20 @@ final class TokenMatcher @publicInBinary private (
   private val boundaries: Array[Int],
   private val transitions: Array[Int],
   private val accept: Array[Int],
+  private val acceptAtEnd: Array[Int],
   private val fastAscii: Array[Int],
+  private val inputStartState: Int,
 ):
+
+  /** The shape `tokenMatcher(...)` expansions compiled against 0.2.x still call; nothing here does. */
+  @nowarn("msg=unused private member")
+  @publicInBinary private def this(
+    boundaries: Array[Int],
+    transitions: Array[Int],
+    accept: Array[Int],
+    fastAscii: Array[Int],
+  ) = this(boundaries, transitions, accept, accept, fastAscii, 0)
+
   private def numPartitions: Int = boundaries.length
 
   /**
@@ -122,7 +138,7 @@ final class TokenMatcher @publicInBinary private (
    */
   def matchAt(input: CharSequence, start: Int): (priority: Int, end: Int) | Null =
     val fastPriority =
-      if start < input.length then
+      if start < input.length && (start > 0 || inputStartState == 0) then
         val c0 = input.charAt(start)
         if c0 < 128 then fastAscii(c0) else -1
       else -1
@@ -138,12 +154,14 @@ final class TokenMatcher @publicInBinary private (
         if next < 0 then endResult(bestPriority, bestEnd)
         else
           val nextPos = pos + Character.charCount(c)
-          accept(next) match
+          acceptAt(next, nextPos) match
             case acc if acc >= 0 => loop(next, nextPos, acc, nextPos)
             case _ => loop(next, nextPos, bestPriority, bestEnd)
+    def acceptAt(state: Int, pos: Int) = if pos < input.length then accept(state) else acceptAtEnd(state)
     def endResult(priority: Int, end: Int) = if end >= 0 then (priority = priority, end = end) else null
-    val initialAccept = accept(0)
-    loop(0, start, initialAccept, if initialAccept >= 0 then start else -1)
+    val initialState = if start == 0 then inputStartState else 0
+    val initialAccept = acceptAt(initialState, start)
+    loop(initialState, start, initialAccept, if initialAccept >= 0 then start else -1)
 
   /** First position `>= from` at which some pattern matches a non-empty prefix. */
   def findFirst(input: CharSequence, from: Int): Option[(start: Int, priority: Int, end: Int)] =
@@ -155,10 +173,10 @@ final class TokenMatcher @publicInBinary private (
 
 /**
  * Pattern `patternIndex` of a [[TokenMatcher]] uses `construct`, which depends on the input
- * around the token and so can't be matched by it: a lookahead, or a `^`/`\A`, `$`/`\Z`/`\z`
- * anchor. Returned by [[TokenMatcher.fromRegexesChecked]]; the other builders throw it as an
+ * after the token and so can't be matched by it: a lookahead other than the `$`/`\Z`/`\z`
+ * anchors. Returned by [[TokenMatcher.fromRegexesChecked]]; the other builders throw it as an
  * `IllegalArgumentException`. Whole-string matching ([[Subset]], [[CaptureMatcher]]) supports
- * all of them.
+ * every lookahead.
  */
 final case class UnsupportedTokenConstruct(patternIndex: Int, construct: String):
   def message: String = s"$construct is not supported in a TokenMatcher pattern"
@@ -215,8 +233,7 @@ object TokenMatcher:
     @tailrec
     def constructIn(pending: List[Regex]): Option[String] = pending match
       case Nil => None
-      case RegexParser.endOfInput :: _ => Some("end-of-input anchor `$`/`\\Z`/`\\z`")
-      case Regex.StartAnchor :: _ => Some("start-of-input anchor `^`/`\\A`")
+      case RegexParser.endOfInput :: rest => constructIn(rest)
       case Regex.Look(_, positive) :: _ =>
         Some(if positive then "lookahead `(?=...)`" else "negative lookahead `(?!...)`")
       case Regex.Concat(first, second) :: rest => constructIn(first :: second :: rest)
@@ -226,7 +243,7 @@ object TokenMatcher:
       case Regex.Repeat(inner, _, _) :: rest => constructIn(inner :: rest)
       case Regex.Compl(inner) :: rest => constructIn(inner :: rest)
       case Regex.Group(_, _, inner) :: rest => constructIn(inner :: rest)
-      case (Regex.Eps | Regex.Empty | Regex.Chars(_)) :: rest => constructIn(rest)
+      case (Regex.Eps | Regex.Empty | Regex.Chars(_) | Regex.StartAnchor) :: rest => constructIn(rest)
     patterns.iterator.zipWithIndex.collectFirst(Function.unlift { (pattern, patternIndex) =>
       constructIn(List(pattern.underlying)).map(UnsupportedTokenConstruct(patternIndex, _))
     })
@@ -269,28 +286,39 @@ object TokenMatcher:
         ids: Map[Seq[Subset], Int],
         transitions: Vector[Int],
         accept: Vector[Int],
-      ): (transitions: Array[Int], accept: Array[Int]) =
+        acceptAtEnd: Vector[Int],
+      ): (transitions: Array[Int], accept: Array[Int], acceptAtEnd: Array[Int]) =
         queue.dequeueOption match
-          case None => (transitions = transitions.toArray, accept = accept.toArray)
+          case None => (transitions = transitions.toArray, accept = accept.toArray, acceptAtEnd = acceptAtEnd.toArray)
           case Some((state, rest)) =>
             val (row, newIds, discovered) = deriveRow(state, ids)
-            loop(rest.enqueueAll(discovered), newIds, transitions ++ row, accept :+ firstNullable(state))
+            loop(
+              rest.enqueueAll(discovered),
+              newIds,
+              transitions ++ row,
+              accept :+ firstAccepting(state)(_.underlying.nullableBeforeMoreInput),
+              acceptAtEnd :+ firstAccepting(state)(_.nullable),
+            )
 
-      if maxStates < 1 then break(Left(StateSpaceLimitExceeded(maxStates)))
-      val (transitions, accept) = loop(Queue(patterns), Map(patterns -> 0), Vector.empty, Vector.empty)
+      // State 0 is the start past offset 0 (no `^`/`\A` holds), then the start at offset 0 if different.
+      val initialStates = Seq(patterns.map(_.withoutStartAnchor), patterns).distinct
+      if initialStates.sizeIs > maxStates then break(Left(StateSpaceLimitExceeded(maxStates)))
+      val (transitions, accept, acceptAtEnd) =
+        loop(Queue.from(initialStates), initialStates.zipWithIndex.toMap, Vector.empty, Vector.empty, Vector.empty)
       val numPartitions = boundaries.length
-      val fastAscii = buildFastAscii(boundaries, transitions, accept, numPartitions)
-      Right(new TokenMatcher(boundaries, transitions, accept, fastAscii))
+      val fastAscii = buildFastAscii(boundaries, transitions, accept, acceptAtEnd, numPartitions)
+      Right(new TokenMatcher(boundaries, transitions, accept, acceptAtEnd, fastAscii, initialStates.size - 1))
 
-  private def firstNullable(state: Seq[Subset]): Int =
-    state.iterator.zipWithIndex.collectFirst { case (sub, idx) if sub.nullable => idx }.getOrElse(-1)
+  private def firstAccepting(state: Seq[Subset])(accepts: Subset => Boolean): Int =
+    state.iterator.zipWithIndex.collectFirst { case (sub, idx) if accepts(sub) => idx }.getOrElse(-1)
 
   /**
    * Precomputes, for every ASCII code point, whether matching it as a single character from the
    * initial state (0) is unambiguously the *longest* possible match -- i.e. no live pattern could
    * extend that one-character match further. That's true exactly when: (a) consuming the
    * character from state 0 lands on a live state, (b) that state is itself accepting (some
-   * pattern's language contains just that one character), and (c) that state has no live
+   * pattern's language contains just that one character), the same way whether or not the input
+   * ends after it (so not for `a$`), and (c) that state has no live
    * outgoing transitions at all (every continuation is dead, so no longer match is reachable from
    * here). Under those three conditions `matchAt` can return `(priority, start + 1)` straight from
    * this table instead of running the general derivative-DFA walk -- see `matchAt`'s doc comment.
@@ -302,14 +330,19 @@ object TokenMatcher:
    * @return array of length 128; `fastAscii(c)` is the winning pattern's priority, or -1 if `c`
    *         doesn't satisfy the three conditions above (matchAt must fall back to the general walk).
    */
-  private def buildFastAscii(boundaries: Array[Int], transitions: Array[Int], accept: Array[Int], numPartitions: Int)
-    : Array[Int] =
+  private def buildFastAscii(
+    boundaries: Array[Int],
+    transitions: Array[Int],
+    accept: Array[Int],
+    acceptAtEnd: Array[Int],
+    numPartitions: Int,
+  ): Array[Int] =
     Array.tabulate(128): c =>
       val next = transitions(partitionIndex(boundaries, c))
       if next < 0 then -1
       else
         val priority = accept(next)
-        if priority < 0 then -1
+        if priority < 0 || priority != acceptAtEnd(next) then -1
         else
           val rowStart = next * numPartitions
           val hasLiveContinuation = (0 until numPartitions).exists(p => transitions(rowStart + p) >= 0)
@@ -340,7 +373,9 @@ object TokenMatcher:
           ${ Expr(m.boundaries) },
           ${ Expr(m.transitions) },
           ${ Expr(m.accept) },
+          ${ Expr(m.acceptAtEnd) },
           ${ Expr(m.fastAscii) },
+          ${ Expr(m.inputStartState) },
         )
       }
   // $COVERAGE-ON$

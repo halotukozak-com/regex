@@ -152,6 +152,9 @@ object Subset:
      */
     def derive(c: Int): Subset = stripStartAnchor(a.rawDerive(c))
 
+    /** `a` at a position past the start of the input, where no `^`/`\A` holds - see [[TokenMatcher]]. */
+    private[regex] def withoutStartAnchor: Subset = stripStartAnchor(a)
+
     private def rawDerive(c: Int): Subset = deepRecursive(a match {
       case Eps | Empty => Empty
       case Chars(set) => if set.contains(c) then Eps else Empty
