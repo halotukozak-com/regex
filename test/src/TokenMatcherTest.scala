@@ -390,36 +390,29 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
     )
   }
 
-  test("decode rebuilds a matcher that matches like the encoded one") {
+  test("fromTables rebuilds a matcher that matches like the one the tables come from") {
     val built = matcher("if", "->", "-", "[a-zA-Z_][a-zA-Z0-9_]*", "ąę+", "[0-9]+")
-    val encoded = TokenMatcher.encode(built)
-    val decoded = TokenMatcher.decode(encoded*)
-    assertEquals(TokenMatcher.encode(decoded), encoded)
+    val (boundaries, transitions, accept) = built.tables
+    val rebuilt = TokenMatcher.fromTables(boundaries, transitions, accept)
     for input <- List("if", "ifx", "->", "-x", "ąęę", "123", "?") do
-      assertEquals(decoded.matchAt(input, 0), built.matchAt(input, 0), input)
+      assertEquals(rebuilt.matchAt(input, 0), built.matchAt(input, 0), input)
   }
 
-  test("encode splits a large matcher into strings of at most 32768 printable ASCII chars") {
-    val built = matcher((0 until 1000).map(i => f"kw$i%04dx")*)
-    val encoded = TokenMatcher.encode(built)
-    assert(encoded.sizeIs > 1, encoded.map(_.length))
-    assert(encoded.forall(_.length <= 32768), encoded.map(_.length))
-    assert(encoded.forall(_.forall(c => c >= 0x20 && c < 0x7f)))
-    val decoded = TokenMatcher.decode(encoded*)
-    assertEquals(decoded.matchAt("kw0534x", 0), (priority = 534, end = 7))
-    assertEquals(decoded.matchAt("kw0534", 0), null)
+  test("tables are copies") {
+    val built = matcher("a")
+    built.tables.transitions.mapInPlace(_ => -1): Unit
+    assertEquals(built.matchAt("a", 0), (priority = 0, end = 1))
   }
 
-  test("decode rejects another encoding version") {
-    val encoded = TokenMatcher.encode(matcher("a"))
-    val otherVersion = ("C" + encoded.head.tail) +: encoded.tail
+  test("fromTables rejects tables of mismatched sizes") {
+    val (boundaries, transitions, accept) = matcher("a").tables
     assertEquals(
-      intercept[IllegalArgumentException](TokenMatcher.decode(otherVersion*)).getMessage,
-      "requirement failed: TokenMatcher encoding version 2 is not 1, the one this regex reads; recompile the code that embedded it",
+      intercept[IllegalArgumentException](TokenMatcher.fromTables(boundaries, transitions.init, accept)).getMessage,
+      s"requirement failed: transitions has ${transitions.length - 1} entries, not ${accept.length} states * ${boundaries.length} partitions",
     )
   }
 
-  test("decode rejects a truncated encoding") {
-    val encoded = TokenMatcher.encode(matcher("a"))
-    intercept[IllegalArgumentException](TokenMatcher.decode(encoded.head.init))
+  test("fromTables rejects a transition to a state that doesn't exist") {
+    val (boundaries, transitions, accept) = matcher("a").tables
+    intercept[IllegalArgumentException](TokenMatcher.fromTables(boundaries, transitions.map(_ => accept.length), accept))
   }

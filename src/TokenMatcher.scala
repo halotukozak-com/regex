@@ -10,8 +10,8 @@ import scala.util.boundary.break
  * Compile-time counterpart to `regex"..."` (see [[Regex]]), but for a whole priority-ordered
  * pattern list instead of a single pattern: parses every pattern *and* builds the DFA
  * (`TokenMatcher.compile`'s derivative-state BFS) at macro-expansion time, splicing the
- * already-built matcher through the existing `given ToExpr[TokenMatcher]` as the string constants
- * of [[TokenMatcher.encode]]. Without this, `TokenMatcher.fromRegexes`/`fromSubsets` re-derive that whole automaton
+ * already-built matcher through the existing `given ToExpr[TokenMatcher]` as plain `Array[Int]`
+ * tables. Without this, `TokenMatcher.fromRegexes`/`fromSubsets` re-derive that whole automaton
  * (BFS over derivative states, transition-table construction) from scratch on every process
  * startup, even though a literal, fixed pattern list (e.g. a lexer's token table) is exactly as
  * knowable at compile time as a single `regex"..."` pattern is.
@@ -87,7 +87,8 @@ inline def tokenMatcher(inline patterns: String*): TokenMatcher = ${ tokenMatche
  * spans; this DFA only ever tracks priority/end position. Wiring captures into the compiled
  * automaton is separate, not-yet-done work.
  *
- * Constructor kept private - only the companion object builds one directly; `@publicInBinary`
+ * Constructor kept private - only the companion object builds one directly, and
+ * [[TokenMatcher.fromTables]] is the public way to rebuild one from [[tables]]; `@publicInBinary`
  * exists solely so code compiled against 0.2.x, whose `given ToExpr[TokenMatcher]` spliced a call
  * to it into a different compilation unit's bytecode, still links.
  */
@@ -98,6 +99,15 @@ final class TokenMatcher @publicInBinary private (
   private val fastAscii: Array[Int],
 ):
   private def numPartitions: Int = boundaries.length
+
+  /**
+   * The DFA's tables, which [[TokenMatcher.fromTables]] rebuilds the matcher from: the first code
+   * point of each alphabet partition, the next state (or `-1`) per state and partition, row-major,
+   * and the lowest pattern index each state accepts (or `-1`). Copies, so the matcher stays
+   * immutable.
+   */
+  def tables: (boundaries: Array[Int], transitions: Array[Int], accept: Array[Int]) =
+    (boundaries = boundaries.clone(), transitions = transitions.clone(), accept = accept.clone())
 
   /**
    * Match a token starting at `start` in `input`.
@@ -323,69 +333,20 @@ object TokenMatcher:
         if boundaries(mid) <= c then loop(mid, hi) else loop(lo, mid - 1)
     loop(0, boundaries.length - 1)
 
-  /** The version of the format [[encode]] writes and [[decode]] reads. */
-  private val EncodingVersion = 1
-
-  /** The most chars in one string of [[encode]]. */
-  private val EncodingChunkSize = 32768
-
   /**
-   * The matcher's tables as strings that [[decode]] reads back, so that a macro can embed a built
-   * matcher as string constants: unlike array literals, which take several bytes of bytecode per
-   * element, a constant costs one byte per char and runs into no method size limit.
+   * Rebuilds a matcher from the [[TokenMatcher.tables]] of another, without deriving its automaton
+   * again - e.g. from tables a macro built at compile time and embedded in the generated code.
    *
-   * The strings are printable ASCII and at most 32768 chars each, so each fits in a class file's
-   * string constant. The format starts with its version; [[decode]] rejects any other.
+   * @throws IllegalArgumentException if the tables are not the tables of a matcher
    */
-  def encode(matcher: TokenMatcher): Seq[String] =
-    val out = StringBuilder()
-    // each value + 1 (so -1 is 0) in 5-bit groups, low first: 0x20-0x3F continues, 0x40-0x5F ends
-    def write(value: Int): Unit =
-      @tailrec def loop(rest: Int): Unit =
-        if rest >= 32 then
-          out += (0x20 + (rest & 31)).toChar
-          loop(rest >>> 5)
-        else out += (0x40 + rest).toChar
-      loop(value + 1)
-    def writeAll(values: Array[Int]): Unit =
-      write(values.length)
-      values.foreach(write)
-    write(EncodingVersion)
-    writeAll(matcher.boundaries)
-    writeAll(matcher.accept)
-    writeAll(matcher.transitions)
-    out.result().grouped(EncodingChunkSize).toSeq
-
-  /**
-   * Rebuilds a matcher from the strings of [[encode]], without deriving its automaton again.
-   *
-   * @throws IllegalArgumentException if `chunks` are not the strings of [[encode]] of this version
-   */
-  def decode(chunks: String*): TokenMatcher =
-    val in = chunks.mkString
-    var pos = 0
-    def read(): Int =
-      @tailrec def loop(value: Int, shift: Int): Int =
-        require(pos < in.length, "Truncated TokenMatcher encoding")
-        val c = in.charAt(pos) - 0x20
-        pos += 1
-        require(c >= 0 && c < 64 && shift < 32, "Malformed TokenMatcher encoding")
-        if c < 32 then loop(value | (c << shift), shift + 5) else value | ((c - 32) << shift)
-      loop(0, 0) - 1
-    def readAll(): Array[Int] =
-      val length = read()
-      require(length >= 0, "Malformed TokenMatcher encoding")
-      Array.fill(length)(read())
-    val version = read()
+  def fromTables(boundaries: Array[Int], transitions: Array[Int], accept: Array[Int]): TokenMatcher =
+    require(boundaries.nonEmpty && boundaries(0) == 0, "boundaries must start with code point 0")
+    require(accept.nonEmpty, "accept must have the initial state")
     require(
-      version == EncodingVersion,
-      s"TokenMatcher encoding version $version is not $EncodingVersion, the one this regex reads; recompile the code that embedded it",
+      transitions.length == accept.length * boundaries.length,
+      s"transitions has ${transitions.length} entries, not ${accept.length} states * ${boundaries.length} partitions",
     )
-    val boundaries = readAll()
-    val accept = readAll()
-    val transitions = readAll()
-    require(pos == in.length, "Trailing data after a TokenMatcher encoding")
-    require(transitions.length == accept.length * boundaries.length, "Malformed TokenMatcher encoding")
+    require(transitions.forall(next => next >= -1 && next < accept.length), "transitions must lead to a state or -1")
     new TokenMatcher(boundaries, transitions, accept, buildFastAscii(boundaries, transitions, accept, boundaries.length))
 
   /** Iterator of code-point start offsets in `input`, beginning at `from`. */
@@ -395,8 +356,8 @@ object TokenMatcher:
       .takeWhile(_ < input.length)
 
   // $COVERAGE-OFF$
-  /** Embeds the already-built DFA table as the string constants of [[encode]] - no `Regex`/`Subset` involved. */
+  /** Embeds the already-built DFA table as `Array[Int]` literals - no `Regex`/`Subset` involved. */
   given ToExpr[TokenMatcher]:
     def apply(m: TokenMatcher)(using Quotes): Expr[TokenMatcher] =
-      '{ TokenMatcher.decode(${ Varargs(encode(m).map(Expr(_))) }*) }
+      '{ TokenMatcher.fromTables(${ Expr(m.boundaries) }, ${ Expr(m.transitions) }, ${ Expr(m.accept) }) }
   // $COVERAGE-ON$
