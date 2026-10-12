@@ -389,3 +389,37 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
       "lookahead `(?=...)` is not supported in a TokenMatcher pattern (pattern 0)",
     )
   }
+
+  test("decode rebuilds a matcher that matches like the encoded one") {
+    val built = matcher("if", "->", "-", "[a-zA-Z_][a-zA-Z0-9_]*", "ąę+", "[0-9]+")
+    val encoded = TokenMatcher.encode(built)
+    val decoded = TokenMatcher.decode(encoded*)
+    assertEquals(TokenMatcher.encode(decoded), encoded)
+    for input <- List("if", "ifx", "->", "-x", "ąęę", "123", "?") do
+      assertEquals(decoded.matchAt(input, 0), built.matchAt(input, 0), input)
+  }
+
+  test("encode splits a large matcher into strings of at most 32768 printable ASCII chars") {
+    val built = matcher((0 until 1000).map(i => f"kw$i%04dx")*)
+    val encoded = TokenMatcher.encode(built)
+    assert(encoded.sizeIs > 1, encoded.map(_.length))
+    assert(encoded.forall(_.length <= 32768), encoded.map(_.length))
+    assert(encoded.forall(_.forall(c => c >= 0x20 && c < 0x7f)))
+    val decoded = TokenMatcher.decode(encoded*)
+    assertEquals(decoded.matchAt("kw0534x", 0), (priority = 534, end = 7))
+    assertEquals(decoded.matchAt("kw0534", 0), null)
+  }
+
+  test("decode rejects another encoding version") {
+    val encoded = TokenMatcher.encode(matcher("a"))
+    val otherVersion = ("C" + encoded.head.tail) +: encoded.tail
+    assertEquals(
+      intercept[IllegalArgumentException](TokenMatcher.decode(otherVersion*)).getMessage,
+      "requirement failed: TokenMatcher encoding version 2 is not 1, the one this regex reads; recompile the code that embedded it",
+    )
+  }
+
+  test("decode rejects a truncated encoding") {
+    val encoded = TokenMatcher.encode(matcher("a"))
+    intercept[IllegalArgumentException](TokenMatcher.decode(encoded.head.init))
+  }
