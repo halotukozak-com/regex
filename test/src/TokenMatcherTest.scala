@@ -426,3 +426,14 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
       "lookahead `(?=...)` is not supported in a TokenMatcher pattern (pattern 0)",
     )
   }
+
+  test("unsupportedConstructs lists every unsupported pattern without building the matcher") {
+    assertEquals(TokenMatcher.unsupportedConstructs(parse("a"), parse("b$"), parse("^c")), Nil)
+    assertEquals(
+      TokenMatcher.unsupportedConstructs(parse("a"), parse("b(?=c)"), parse("d"), parse("e(?!f)(?=g)")),
+      List(
+        UnsupportedTokenConstruct(1, "lookahead `(?=...)`"),
+        UnsupportedTokenConstruct(3, "negative lookahead `(?!...)`"),
+      ),
+    )
+  }
