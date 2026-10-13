@@ -236,7 +236,7 @@ object TokenMatcher:
     compile(initial, maxStates)
 
   private def requireSupported(patterns: Seq[Subset]): Unit =
-    unsupportedIn(patterns).nextOption().foreach(error => throw IllegalArgumentException(error.toString))
+    unsupportedIn(patterns).foreach(error => throw IllegalArgumentException(error.toString))
 
   /** Each pattern that uses a construct a token can't be matched with - see [[UnsupportedTokenConstruct]]. */
   private def unsupportedIn(patterns: Seq[Subset]): Iterator[UnsupportedTokenConstruct] =
