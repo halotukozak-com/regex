@@ -427,10 +427,13 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
     )
   }
 
-  test("checkSupported finds the first unsupported construct without building the matcher") {
-    assertEquals(TokenMatcher.checkSupported(parse("a"), parse("b$"), parse("^c")), None)
+  test("unsupportedConstructs lists every unsupported pattern without building the matcher") {
+    assertEquals(TokenMatcher.unsupportedConstructs(parse("a"), parse("b$"), parse("^c")), Nil)
     assertEquals(
-      TokenMatcher.checkSupported(parse("a"), parse("b(?=c)"), parse("d(?!e)")),
-      Some(UnsupportedTokenConstruct(1, "lookahead `(?=...)`")),
+      TokenMatcher.unsupportedConstructs(parse("a"), parse("b(?=c)"), parse("d"), parse("e(?!f)(?=g)")),
+      List(
+        UnsupportedTokenConstruct(1, "lookahead `(?=...)`"),
+        UnsupportedTokenConstruct(3, "negative lookahead `(?!...)`"),
+      ),
     )
   }

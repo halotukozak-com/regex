@@ -206,16 +206,18 @@ object TokenMatcher:
    */
   def fromRegexesChecked(initial: Regex*): Either[UnsupportedTokenConstruct, TokenMatcher] =
     val patterns = initial.map(Subset.of)
-    unsupportedConstruct(patterns)
+    unsupportedIn(patterns)
+      .nextOption()
       .toLeft(compile(patterns, Int.MaxValue).getOrElse(throw MatchError("unreachable: Int.MaxValue state cap exceeded")))
 
   /**
-   * The first [[UnsupportedTokenConstruct]] in `patterns`, the check [[fromRegexesChecked]] makes,
-   * without building the matcher - e.g. for a macro that validates patterns at compile time and
-   * builds the matcher at runtime.
+   * Every pattern that uses a construct [[fromRegexesChecked]] rejects, with the first such
+   * construct in it, in pattern order - the check those builders make, without building the
+   * matcher. Empty when every pattern is supported. E.g. for a macro that reports each
+   * unsupported pattern at compile time and builds the matcher at runtime.
    */
-  def checkSupported(patterns: Regex*): Option[UnsupportedTokenConstruct] =
-    unsupportedConstruct(patterns.map(Subset.of))
+  def unsupportedConstructs(patterns: Regex*): List[UnsupportedTokenConstruct] =
+    unsupportedIn(patterns.map(Subset.of)).toList
 
   /**
    * Like [[fromRegexes]], but fails fast with `Left(StateSpaceLimitExceeded(maxStates))` instead
@@ -234,10 +236,10 @@ object TokenMatcher:
     compile(initial, maxStates)
 
   private def requireSupported(patterns: Seq[Subset]): Unit =
-    unsupportedConstruct(patterns).foreach(error => throw IllegalArgumentException(error.toString))
+    unsupportedIn(patterns).nextOption().foreach(error => throw IllegalArgumentException(error.toString))
 
-  /** The first construct some pattern uses that a token can't be matched with - see [[UnsupportedTokenConstruct]]. */
-  private def unsupportedConstruct(patterns: Seq[Subset]): Option[UnsupportedTokenConstruct] =
+  /** Each pattern that uses a construct a token can't be matched with - see [[UnsupportedTokenConstruct]]. */
+  private def unsupportedIn(patterns: Seq[Subset]): Iterator[UnsupportedTokenConstruct] =
     @tailrec
     def constructIn(pending: List[Regex]): Option[String] = pending match
       case Nil => None
@@ -252,9 +254,8 @@ object TokenMatcher:
       case Regex.Compl(inner) :: rest => constructIn(inner :: rest)
       case Regex.Group(_, _, inner) :: rest => constructIn(inner :: rest)
       case (Regex.Eps | Regex.Empty | Regex.Chars(_) | Regex.StartAnchor) :: rest => constructIn(rest)
-    patterns.iterator.zipWithIndex.collectFirst(Function.unlift { (pattern, patternIndex) =>
+    patterns.iterator.zipWithIndex.flatMap: (pattern, patternIndex) =>
       constructIn(List(pattern.underlying)).map(UnsupportedTokenConstruct(patternIndex, _))
-    })
 
   private def compile(patterns: Seq[Subset], maxStates: Int): Either[StateSpaceLimitExceeded, TokenMatcher] =
     boundary:
