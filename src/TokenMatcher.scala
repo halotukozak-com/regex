@@ -210,6 +210,14 @@ object TokenMatcher:
       .toLeft(compile(patterns, Int.MaxValue).getOrElse(throw MatchError("unreachable: Int.MaxValue state cap exceeded")))
 
   /**
+   * The first [[UnsupportedTokenConstruct]] in `patterns`, the check [[fromRegexesChecked]] makes,
+   * without building the matcher - e.g. for a macro that validates patterns at compile time and
+   * builds the matcher at runtime.
+   */
+  def checkSupported(patterns: Regex*): Option[UnsupportedTokenConstruct] =
+    unsupportedConstruct(patterns.map(Subset.of))
+
+  /**
    * Like [[fromRegexes]], but fails fast with `Left(StateSpaceLimitExceeded(maxStates))` instead
    * of exploring more than `maxStates` distinct derivative states while building the DFA - see
    * [[StateSpaceLimitExceeded]]. Opt-in: [[fromRegexes]] itself stays uncapped for existing
