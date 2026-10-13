@@ -236,6 +236,24 @@ enum Regex:
     case Group(_, _, inner) => inner.hasStartAnchor
 
   /**
+   * Cached: `true` iff `$`/`\Z`/`\z` occurs anywhere in this tree. They parse to the end-of-input
+   * lookahead `(?!.)` over every code point, so a pattern with one matches only where the input
+   * ends - e.g. a [[TokenMatcher]] pattern that matches only as the input's last token. The same
+   * plain structural recursion as [[hasStartAnchor]].
+   */
+  @threadUnsafe lazy val hasEndAnchor: Boolean = this match
+    case Look(_, _) if this == RegexParser.endOfInput => true
+    case StartAnchor | Eps | Empty | Chars(_) => false
+    case Concat(a, b) => a.hasEndAnchor || b.hasEndAnchor
+    case Alt(parts) => parts.exists(_.hasEndAnchor)
+    case Inter(parts) => parts.exists(_.hasEndAnchor)
+    case Star(inner) => inner.hasEndAnchor
+    case Repeat(inner, _, _) => inner.hasEndAnchor
+    case Compl(inner) => inner.hasEndAnchor
+    case Look(r, _) => r.hasEndAnchor
+    case Group(_, _, inner) => inner.hasEndAnchor
+
+  /**
    * Cached: like [[nullable]], but at a position followed by more input instead of at the end of
    * it - where [[TokenMatcher]] checks every token end but the last. The two differ only on the
    * end-of-input lookahead `(?!.)` that `$`/`\Z`/`\z` parse to, which fails here. Any other

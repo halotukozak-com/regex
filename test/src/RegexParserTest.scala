@@ -151,6 +151,12 @@ class RegexParserTest extends munit.FunSuite:
     assertEquals(parse("a$"), Regex.lit('a').concat(endOfInput))
   }
 
+  test("hasEndAnchor finds $/\\Z/\\z anywhere, and only them") {
+    for pattern <- List("a$", "a\\Z", "a\\z", "(a|b$)c", "(?:a$)*", "(?=a$)b") do
+      assert(parse(pattern).hasEndAnchor, pattern)
+    for pattern <- List("a", "^a", "a(?=b)", "a(?!b)", "[$]", "\\$") do assert(!parse(pattern).hasEndAnchor, pattern)
+  }
+
   test("parses \\A as StartAnchor") {
     assertEquals(parse("\\Aa"), parse("^a"))
   }
