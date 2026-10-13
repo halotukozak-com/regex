@@ -426,3 +426,14 @@ class TokenMatcherTest extends munit.FunSuite, UnionSafeCompare:
       "lookahead `(?=...)` is not supported in a TokenMatcher pattern (pattern 0)",
     )
   }
+
+  test("fromPatterns parses the patterns and builds the same matcher as fromRegexes") {
+    val built = TokenMatcher.fromPatterns("if", "[a-zA-Z_][a-zA-Z0-9_]*")
+    assertEquals(built.matchAt("ifx", 0), (priority = 1, end = 3))
+    assertEquals(built.matchAt("if", 0), (priority = 0, end = 2))
+  }
+
+  test("fromPatterns rejects a pattern that doesn't parse") {
+    val error = intercept[IllegalArgumentException](TokenMatcher.fromPatterns("a", "(b"))
+    assert(error.getMessage.endsWith("(pattern 1)"), error.getMessage)
+  }

@@ -192,6 +192,20 @@ object TokenMatcher:
   def fromRegexes(initial: Regex*): TokenMatcher = fromSubsets(initial.map(Subset.of)*)
 
   /**
+   * Parses `patterns` and builds a matcher from them - e.g. from the pattern strings a macro
+   * embeds after checking them at compile time, instead of their [[Regex]] trees.
+   *
+   * @throws IllegalArgumentException if a pattern doesn't parse, or uses a construct
+   *                                  [[fromRegexesChecked]] rejects
+   */
+  def fromPatterns(patterns: String*): TokenMatcher =
+    val regexes = patterns.zipWithIndex.map: (pattern, index) =>
+      RegexParser.parse(pattern) match
+        case Right(regex) => regex
+        case Left(error) => throw IllegalArgumentException(s"${error.message} (pattern $index)")
+    fromRegexes(regexes*)
+
+  /**
    * Build a matcher from pre-parsed subsets (use this from macros after compile-time parsing).
    *
    * @throws IllegalArgumentException if a pattern uses a construct [[fromRegexesChecked]] rejects
