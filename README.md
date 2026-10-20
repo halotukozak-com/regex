@@ -4,6 +4,8 @@ A pure-Scala symbolic regex algebra with exact language containment ("is this pa
 of that one?") — not just string matching. Cross-built for the JVM, Scala.js, and Scala Native
 from a single source tree, with zero dependency on `java.util.regex` or any other JVM-only API.
 
+[Documentation](https://regex.halotukozak.com/) · [Scaladex](https://index.scala-lang.org/halotukozak-com/regex) · [Maven Central](https://central.sonatype.com/artifact/com.halotukozak/regex_3)
+
 ## Overview
 
 `java.util.regex.Pattern`, JavaScript's `RegExp`, and every other backtracking regex engine let

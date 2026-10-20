@@ -66,9 +66,9 @@ object `package` extends Module:
         publishVersion(),
         "-project-footer",
         "made with ❤️ and coffee",
-        "-social-links:github::https://github.com/halotukozak/regex",
+        "-social-links:github::https://github.com/halotukozak-com/regex",
         "-snippet-compiler:compile",
-        s"-source-links:$moduleDir=github://halotukozak/regex/main",
+        s"-source-links:$moduleDir=github://halotukozak-com/regex/main",
         "-revision:main",
       )
     }
@@ -81,9 +81,9 @@ object `package` extends Module:
       description =
         "A pure-Scala symbolic regex algebra with exact language containment (subset) checks, cross-built for JVM, Scala.js, and Scala Native",
       organization = "com.halotukozak",
-      url = "https://github.com/halotukozak/regex",
+      url = "https://github.com/halotukozak-com/regex",
       licenses = Seq(License.MIT),
-      versionControl = VersionControl.github("halotukozak", "regex"),
+      versionControl = VersionControl.github("halotukozak-com", "regex"),
       developers = Seq(Developer("halotukozak", "Bartłomiej Kozak", "https://github.com/halotukozak")),
     )
 
