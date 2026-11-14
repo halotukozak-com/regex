@@ -149,3 +149,7 @@ they're rejected: `tokenMatcher` fails to compile, `fromRegexesChecked` returns 
 
 Early (`0.x`). The parser deliberately supports a subset of `java.util.regex.Pattern`'s syntax —
 see the package scaladoc for exactly what's in and what's out.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
