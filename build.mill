@@ -82,7 +82,7 @@ object `package` extends Module:
         "A pure-Scala symbolic regex algebra with exact language containment (subset) checks, cross-built for JVM, Scala.js, and Scala Native",
       organization = "com.halotukozak",
       url = "https://github.com/halotukozak-com/regex",
-      licenses = Seq(License.MIT),
+      licenses = Seq(License.ApacheVersion2),
       versionControl = VersionControl.github("halotukozak-com", "regex"),
       developers = Seq(Developer("halotukozak", "Bartłomiej Kozak", "https://github.com/halotukozak")),
     )
